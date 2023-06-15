@@ -1,4 +1,3 @@
-import inspect
 import os
 
 import numpy as np
@@ -7,17 +6,16 @@ import wandb
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration
-from transformers import CLIPTextModel, CLIPTokenizer
 from diffusers import (
     AutoencoderKL,
     DDIMScheduler,
-    StableDiffusionPipeline,
     UNet2DConditionModel,
 )
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import EMAModel
+from transformers import CLIPTextModel, CLIPTokenizer
+
 from src.args_parser import parse_args
-from src.cond_unet_2d import CondUNet2DModel
 from src.utils_dataset import setup_dataset
 from src.utils_misc import (
     args_checker,
@@ -86,10 +84,10 @@ def main(args):
     )
 
     # ------------------- Pretrained Pipeline ------------------
-    vae: AutoencoderKL = AutoencoderKL.from_pretrained(
+    autoencoder_model: AutoencoderKL = AutoencoderKL.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision
     )
-    unet: UNet2DConditionModel = UNet2DConditionModel.from_pretrained(
+    denoiser_model: UNet2DConditionModel = UNet2DConditionModel.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision
     )
     text_encoder: CLIPTextModel = CLIPTextModel.from_pretrained(
@@ -104,43 +102,47 @@ def main(args):
     )
 
     # Move components to device and cast frozen ones to float16
-    vae.to(accelerator.device, dtype=torch.float16)
-    unet.to(accelerator.device)
-    text_encoder.to(accelerator.device, dtype=torch.float16)
-    
+    autoencoder_model.to(accelerator.device)
+    denoiser_model.to(accelerator.device)
+    text_encoder.to(accelerator.device)
+
     # Freeze components
-    vae.requires_grad_(False)
+    autoencoder_model.requires_grad_(False)
     text_encoder.requires_grad_(False)
 
     # --------------------- Noise scheduler --------------------
-    noise_scheduler = DDIMScheduler.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="scheduler"
+    noise_scheduler = DDIMScheduler(
+        num_train_timesteps=args.num_training_steps,
+        beta_start=args.beta_start,
+        beta_end=args.beta_end,
+        beta_schedule=args.beta_schedule,
+        prediction_type=args.prediction_type,
     )
 
     # Create EMA for the unet model
     if args.use_ema:
         ema_unet = EMAModel(
-            unet.parameters(),
+            denoiser_model.parameters(),
             decay=args.ema_max_decay,
             use_ema_warmup=True,
             inv_gamma=args.ema_inv_gamma,
             power=args.ema_power,
             model_cls=UNet2DConditionModel,
-            model_config=unet.config,
+            model_config=denoiser_model.config,
         )
     else:
         ema_unet = None
 
     if args.enable_xformers_memory_efficient_attention:
-        setup_xformers_memory_efficient_attention(unet, logger)
+        setup_xformers_memory_efficient_attention(denoiser_model, logger)
 
     # track gradients
     if accelerator.is_main_process:
-        wandb.watch(unet)
+        wandb.watch(denoiser_model)
 
     # ------------------------ Optimizer -----------------------
     optimizer = torch.optim.AdamW(
-        unet.parameters(),
+        denoiser_model.parameters(),
         lr=args.learning_rate,
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.adam_weight_decay,
@@ -156,8 +158,8 @@ def main(args):
     )
 
     # ------------------ Distributed compute  ------------------
-    unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        unet, optimizer, train_dataloader, lr_scheduler
+    denoiser_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        denoiser_model, optimizer, train_dataloader, lr_scheduler
     )
 
     # --------------------- Training setup ---------------------
@@ -193,7 +195,10 @@ def main(args):
     for epoch in range(first_epoch, args.num_epochs):
         # Training epoch
         global_step = perform_training_epoch(
-            unet,
+            denoiser_model,
+            autoencoder_model,
+            tokenizer,
+            text_encoder,
             num_update_steps_per_epoch,
             accelerator,
             epoch,
@@ -202,7 +207,6 @@ def main(args):
             first_epoch,
             resume_step,
             noise_scheduler,
-            rng,
             global_step,
             optimizer,
             lr_scheduler,
@@ -217,16 +221,16 @@ def main(args):
             generate_samples_and_compute_metrics(
                 args,
                 accelerator,
-                unet,
+                denoiser_model,
                 ema_unet,
+                autoencoder_model,
+                text_encoder,
+                tokenizer,
                 noise_scheduler,
                 image_generation_tmp_save_folder,
-                dataset,
                 actual_eval_batch_sizes_for_this_process,
-                args.guidance_factor,
                 epoch,
                 global_step,
-                nb_classes,
             )
 
         if (
@@ -236,7 +240,10 @@ def main(args):
         ):
             checkpoint_model(
                 accelerator,
-                unet,
+                denoiser_model,
+                autoencoder_model,
+                text_encoder,
+                tokenizer,
                 args,
                 ema_unet,
                 noise_scheduler,

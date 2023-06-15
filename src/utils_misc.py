@@ -13,8 +13,6 @@ from diffusers.utils.import_utils import is_xformers_available
 from huggingface_hub import HfFolder, Repository, create_repo, whoami
 from packaging import version
 
-from .cond_unet_2d import CondUNet2DModel
-
 
 def extract_into_tensor(arr, timesteps, broadcast_shape):
     """
@@ -53,94 +51,40 @@ def split(l, n, idx):
     Should probably be replaced by Accelerator.split_between_processes.
     """
     k, m = divmod(len(l), n)
-    l = [l[i * k + min(i, m): (i + 1) * k + min(i + 1, m)] for i in range(n)]
+    l = [l[i * k + min(i, m) : (i + 1) * k + min(i + 1, m)] for i in range(n)]
     return l[idx]
 
 
 def args_checker(args):
     assert args.use_pytorch_loader, "Only PyTorch loader is supported for now."
 
-    if args.guidance_factor == 0:
-        msg = "The guidance factor is null "
-        msg += "but the probability to generate unconditionally is not 🧐"
-        assert args.proba_uncond == 0, msg
-
-    if args.proba_uncond == 0:
-        msg = "The probability to generate unconditionally is null "
-        msg += "but the guidance factor is not 🧐"
-        assert args.guidance_factor == 0, msg
-
     if args.dataset_name is None and args.train_data_dir is None:
         msg = "You must specify either a dataset name from the hub "
         msg += "or a train data directory."
         raise ValueError(msg)
 
-    if args.proba_uncond == 1:
-        msg = "The probability to generate unconditionally is 1 "
-        msg += "but the guidance factor is not None 🧐"
-        assert args.guidance_factor is None, msg
-
     if args.prediction_type == "velocity":
-        raise NotImplementedError(
-            "Velocity prediction is not implemented yet; TODO!")
-
-
-# create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
-def save_model_hook(models, weights, output_dir, args, ema_model):
-    if args.use_ema:
-        ema_model.save_pretrained(os.path.join(output_dir, "unet_ema"))
-
-    for model in models:
-        model.save_pretrained(os.path.join(output_dir, "unet"))
-
-        # make sure to pop weight so that corresponding model is not saved again
-        weights.pop()
-
-
-def load_model_hook(models, input_dir, args, ema_model, accelerator):
-    if args.use_ema:
-        load_model = EMAModel.from_pretrained(
-            os.path.join(input_dir, "unet_ema"), CondUNet2DModel
-        )
-        ema_model.load_state_dict(load_model.state_dict())
-        ema_model.to(accelerator.device)
-        del load_model
-
-    for _ in range(len(models)):
-        # pop models so that they are not loaded again
-        model = models.pop()
-
-        # load diffusers style into model
-        load_model = CondUNet2DModel.from_pretrained(
-            input_dir, subfolder="unet")
-        model.register_to_config(**load_model.config)
-
-        model.load_state_dict(load_model.state_dict())
-        del load_model
-
-    accelerator.register_save_state_pre_hook(save_model_hook)
-    accelerator.register_load_state_pre_hook(load_model_hook)
+        raise NotImplementedError("Velocity prediction is not implemented yet; TODO!")
 
 
 def create_repo_structure(args, accelerator):
     repo = None
     if args.push_to_hub:
         raise NotImplementedError()
-        if args.hub_model_id is None:
-            repo_name = get_full_repo_name(
-                Path(args.output_dir).name, token=args.hub_token
-            )
-        else:
-            repo_name = args.hub_model_id
-            create_repo(repo_name, exist_ok=True, token=args.hub_token)
-        repo = Repository(
-            args.output_dir, clone_from=repo_name, token=args.hub_token)
+        # if args.hub_model_id is None:
+        #     repo_name = get_full_repo_name(
+        #         Path(args.output_dir).name, token=args.hub_token
+        #     )
+        # else:
+        #     repo_name = args.hub_model_id
+        #     create_repo(repo_name, exist_ok=True, token=args.hub_token)
+        # repo = Repository(args.output_dir, clone_from=repo_name, token=args.hub_token)
 
-        with open(os.path.join(args.output_dir, ".gitignore"), "w+") as gitignore:
-            if "step_*" not in gitignore:
-                gitignore.write("step_*\n")
-            if "epoch_*" not in gitignore:
-                gitignore.write("epoch_*\n")
+        # with open(os.path.join(args.output_dir, ".gitignore"), "w+") as gitignore:
+        #     if "step_*" not in gitignore:
+        #         gitignore.write("step_*\n")
+        #     if "epoch_*" not in gitignore:
+        #         gitignore.write("epoch_*\n")
     elif args.output_dir is not None and accelerator.is_main_process:
         os.makedirs(args.output_dir, exist_ok=True)
 

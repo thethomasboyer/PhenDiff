@@ -27,10 +27,15 @@ def parse_args():
         help="The split to use. Pass an empty string if there is no split in the dataset structure.",
     )
     parser.add_argument(
-        "--model_config_name_or_path",
+        "--pretrained_model_name_or_path",
+        type=str,
+        required=True,
+        help="The name of or path to the pretrained pipeline.",
+    )
+    parser.add_argument(
+        "--revision",
         type=str,
         default=None,
-        help="The config of the UNet model to train, leave as None to use standard DDIM configuration.",
     )
     parser.add_argument(
         "--train_data_dir",
@@ -124,21 +129,10 @@ def parse_args():
         default=100,
         help="How often to save the model during training.",
     )
-    help_msg = "The scaling factor of the guidance "
-    help_msg += "('ω' in the Classifier-Free Diffusion Guidance paper: https://arxiv.org/pdf/2207.12598.pdf)."
-    help_msg += "Must be left blank if `proba_uncond` is set to 1."
     parser.add_argument(
-        "--guidance_factor", type=float, help=help_msg
-    )
-    help_msg = "The probability of performing unconditional generation at each step. "
-    help_msg += (
-        "See Classifier-Free Diffusion Guidance (https://arxiv.org/pdf/2207.12598.pdf)."
-    )
-    help_msg += "Set to 1 to disable conditional generation."
-    parser.add_argument(
-        "--proba_uncond",
+        "--guidance_factor",
         type=float,
-        help=help_msg,
+        help="The scaling factor of the guidance ('ω' in the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf; *not* the same definition that in the Classifier-Free Diffusion Guidance paper!). Set to 1 to disable guidance.",
     )
     parser.add_argument(
         "--gradient_accumulation_steps",
@@ -267,11 +261,11 @@ def parse_args():
         choices=["epsilon", "sample", "velocity"],
         help="Whether the model should predict the 'epsilon'/noise error, directly the reconstructed image 'x0', or the velocity (see https://arxiv.org/abs/2202.00512)",
     )
-    parser.add_argument("--ddim_num_steps", type=int, default=1000)
-    parser.add_argument("--ddim_num_inference_steps", type=int, default=50)
-    parser.add_argument("--ddim_beta_schedule", type=str, default="squaredcos_cap_v2")
-    parser.add_argument("--ddim_beta_start", type=float, default=0.0001)
-    parser.add_argument("--ddim_beta_end", type=float, default=0.02)
+    parser.add_argument("--num_training_steps", type=int, default=1000)
+    parser.add_argument("--num_inference_steps", type=int, default=50)
+    parser.add_argument("--beta_schedule", type=str, default="squaredcos_cap_v2")
+    parser.add_argument("--beta_start", type=float, default=0.0001)
+    parser.add_argument("--beta_end", type=float, default=0.02)
     parser.add_argument(
         "--checkpointing_steps",
         type=int,

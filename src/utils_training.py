@@ -3,17 +3,16 @@ from math import ceil
 from pathlib import Path
 from shutil import rmtree
 
+import numpy as np
 import torch
 import torch.nn.functional as F
-import torch_fidelity
+from diffusers import StableDiffusionPipeline
 from diffusers.training_utils import EMAModel
-from diffusers.utils import is_accelerate_version
 from PIL.Image import Image
 from tqdm.auto import tqdm
 
 import wandb
 
-from .pipeline_conditional_ddim import ConditionialDDIMPipeline
 from .utils_misc import extract_into_tensor, split
 
 
@@ -34,8 +33,7 @@ def resume_from_checkpoint(
         accelerator.wait_for_everyone()
         dirs = os.listdir(chckpnts_dir)
         dirs = sorted(dirs, key=lambda x: int(x.split("_")[1]))
-        path = Path(chckpnts_dir, dirs[-1]
-                    ).as_posix() if len(dirs) > 0 else None
+        path = Path(chckpnts_dir, dirs[-1]).as_posix() if len(dirs) > 0 else None
 
     if path is None:
         accelerator.print(
@@ -82,8 +80,7 @@ def get_training_setup(args, accelerator, train_dataloader, logger, dataset):
     tot_nb_eval_batches = ceil(args.nb_generated_images / args.eval_batch_size)
     glob_eval_bs = [args.eval_batch_size] * (tot_nb_eval_batches - 1)
     glob_eval_bs += [
-        args.nb_generated_images - args.eval_batch_size *
-        (tot_nb_eval_batches - 1)
+        args.nb_generated_images - args.eval_batch_size * (tot_nb_eval_batches - 1)
     ]
     nb_proc = accelerator.num_processes
     actual_eval_batch_sizes_for_this_process = split(
@@ -93,13 +90,11 @@ def get_training_setup(args, accelerator, train_dataloader, logger, dataset):
     logger.info("***** Running training *****")
     logger.info(f"  Num examples = {len(dataset)}")
     logger.info(f"  Num Epochs = {args.num_epochs}")
-    logger.info(
-        f"  Instantaneous batch size per device = {args.train_batch_size}")
+    logger.info(f"  Instantaneous batch size per device = {args.train_batch_size}")
     logger.info(
         f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}"
     )
-    logger.info(
-        f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
+    logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
     logger.info(f"  Total optimization steps = {max_train_steps}")
 
     return (
@@ -110,7 +105,10 @@ def get_training_setup(args, accelerator, train_dataloader, logger, dataset):
 
 
 def perform_training_epoch(
-    model,
+    denoiser_model,
+    autoencoder_model,
+    tokenizer,
+    text_encoder,
     num_update_steps_per_epoch,
     accelerator,
     epoch,
@@ -119,7 +117,6 @@ def perform_training_epoch(
     first_epoch,
     resume_step,
     noise_scheduler,
-    rng,
     global_step,
     optimizer,
     lr_scheduler,
@@ -127,7 +124,7 @@ def perform_training_epoch(
     logger,
 ):
     # set model to train mode
-    model.train()
+    denoiser_model.train()
 
     # give me a pretty progress bar 🤩
     progress_bar = tqdm(
@@ -135,22 +132,27 @@ def perform_training_epoch(
         disable=not accelerator.is_local_main_process,
     )
     progress_bar.set_description(f"Epoch {epoch}")
+
+    # iterate over all batches
     for step, batch in enumerate(train_dataloader):
         # Skip steps until we reach the resumed step
         if args.resume_from_checkpoint and epoch == first_epoch and step < resume_step:
             if step % args.gradient_accumulation_steps == 0:
-                progress_bar.update(1)
+                progress_bar.update()
             continue
 
         if args.use_pytorch_loader:
             clean_images = batch[0]
-            class_labels = batch[1]
         else:
             clean_images = batch["images"]
-            class_labels = batch["class_labels"]
+
+        # Convert images to latent space
+        latents = autoencoder_model.encode(clean_images).latent_dist.sample()
+        latents = latents * autoencoder_model.config.scaling_factor
+        # TODO: what is this ↑?
 
         # Sample noise that we'll add to the images
-        noise = torch.randn(clean_images.shape).to(clean_images.device)
+        noise = torch.randn(latents.shape).to(latents.device)
 
         # Sample a random timestep for each image
         timesteps = torch.randint(
@@ -162,31 +164,34 @@ def perform_training_epoch(
 
         # Add noise to the clean images according to the noise magnitude at each timestep
         # (this is the forward diffusion process)
-        noisy_images = noise_scheduler.add_noise(
-            clean_images, noise, timesteps)
+        noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
-        with accelerator.accumulate(model):
+        with accelerator.accumulate(denoiser_model):
             loss_value = _forward_backward_pass(
-                rng,
                 args,
                 accelerator,
-                epoch,
-                global_step,
-                model,
-                noisy_images,
+                denoiser_model,
+                noisy_latents,
                 timesteps,
-                class_labels,
                 noise,
                 noise_scheduler,
-                clean_images,
+                latents,
                 optimizer,
                 lr_scheduler,
+                tokenizer,
+                text_encoder,
             )
 
         # Checks if the accelerator has performed an optimization step behind the scenes
         if accelerator.sync_gradients:
             global_step = _syn_training_state(
-                args, ema_model, model, progress_bar, global_step, accelerator, logger
+                args,
+                ema_model,
+                denoiser_model,
+                progress_bar,
+                global_step,
+                accelerator,
+                logger,
             )
 
         logs = {
@@ -208,45 +213,36 @@ def perform_training_epoch(
 
 
 def _forward_backward_pass(
-    rng,
     args,
     accelerator,
-    epoch,
-    global_step,
-    model,
+    denoiser_model,
     noisy_images,
     timesteps,
-    class_labels,
     noise,
     noise_scheduler,
     clean_images,
     optimizer,
     lr_scheduler,
+    tokenizer,
+    text_encoder,
 ):
-    # classifier-free guidance: randomly discard conditioning to train unconditionally
-    do_unconditional_pass = rng.random() < args.proba_uncond
-    accelerator.log(
-        {
-            "unconditional step": int(do_unconditional_pass),
-            "epoch": epoch,
-        },
-        step=global_step,
-    )
-    if do_unconditional_pass:
-        class_emb = torch.zeros(
-            (class_labels.shape[0], accelerator.unwrap_model(
-                model).time_embed_dim)
-        ).to(accelerator.device)
-        class_labels = None
-    else:
-        class_emb = None
+    # Get the *fake* text embedding for conditioning
+    # for now I just take an empty text, hoping that it will result
+    # in a "neutral" conditioning (whatever that means...)
+    tokens = tokenizer(
+        [""] * noisy_images.shape[0],
+        max_length=tokenizer.model_max_length,
+        padding="max_length",
+        truncation=True,
+        return_tensors="pt",
+    ).input_ids.to(accelerator.device)
+    encoder_hidden_states = text_encoder(tokens)[0]
 
     # Predict the noise residual
-    model_output = model(
+    model_output = denoiser_model(
         sample=noisy_images,
         timestep=timesteps,
-        class_labels=class_labels,
-        class_emb=class_emb,
+        encoder_hidden_states=encoder_hidden_states,
     ).sample
 
     if args.prediction_type == "epsilon":
@@ -262,14 +258,17 @@ def _forward_backward_pass(
             model_output, clean_images, reduction="none"
         )  # use SNR weighting from distillation paper
         loss = loss.mean()
+    elif noise_scheduler.config.prediction_type == "v_prediction":
+        raise NotImplementedError(
+            "Need to check that everything works for the v_prediction"
+        )
     else:
-        raise ValueError(
-            f"Unsupported prediction type: {args.prediction_type}")
+        raise ValueError(f"Unsupported prediction type: {args.prediction_type}")
 
     accelerator.backward(loss)
 
     if accelerator.sync_gradients:
-        accelerator.clip_grad_norm_(model.parameters(), 1.0)
+        accelerator.clip_grad_norm_(denoiser_model.parameters(), 1.0)
     optimizer.step()
     lr_scheduler.step()
     optimizer.zero_grad()
@@ -313,163 +312,105 @@ def _syn_training_state(
 def generate_samples_and_compute_metrics(
     args,
     accelerator,
-    model,
+    denoiser_model,
     ema_model,
+    vae,
+    text_encoder,
+    tokenizer,
     noise_scheduler,
     image_generation_tmp_save_folder,
-    dataset,
     actual_eval_batch_sizes_for_this_process,
-    guidance_factor,
     epoch,
     global_step,
-    nb_classes: int,
 ):
     progress_bar = tqdm(
         total=len(actual_eval_batch_sizes_for_this_process),
         desc=f"Generating images on process {accelerator.process_index}",
         # disable=not accelerator.is_local_main_process,
     )
-    unet = accelerator.unwrap_model(model)
+    unet = accelerator.unwrap_model(denoiser_model)
 
     if args.use_ema:
         ema_model.store(unet.parameters())
         ema_model.copy_to(unet.parameters())
 
-    pipeline = ConditionialDDIMPipeline(
+    pipeline = StableDiffusionPipeline.from_pretrained(
+        args.pretrained_model_name_or_path,
+        vae=vae,
+        text_encoder=text_encoder,
+        tokenizer=tokenizer,
         unet=unet,
         scheduler=noise_scheduler,
-    )
+        safety_checker=None,
+        feature_extractor=None,
+        revision=args.revision,
+    ).to(accelerator.device)
     pipeline.set_progress_bar_config(disable=True)
 
     # set manual seed in order to observe the "same" images
     generator = torch.Generator(device=pipeline.device).manual_seed(0)
 
     # run pipeline in inference (sample random noise and denoise)
-    # -> generate args.nb_generated_images in batches *per class*
-    # if uncond gen, no need to loop over classes for generation
-    if args.proba_uncond == 1:
-        nb_classes = 1
-    for label in range(nb_classes):
-        # clean image_generation_tmp_save_folder (it's per-class)
-        if accelerator.is_local_main_process:
-            if os.path.exists(image_generation_tmp_save_folder):
-                rmtree(image_generation_tmp_save_folder)
-            os.makedirs(image_generation_tmp_save_folder, exist_ok=False)
-        accelerator.wait_for_everyone()
+    # clean image_generation_tmp_save_folder (it's per-class)
+    if accelerator.is_local_main_process:
+        if os.path.exists(image_generation_tmp_save_folder):
+            rmtree(image_generation_tmp_save_folder)
+        os.makedirs(image_generation_tmp_save_folder, exist_ok=False)
+    accelerator.wait_for_everyone()
 
-        # get class name
-        class_name = dataset.classes[label]
+    # loop over eval batches for this process
+    for batch_idx, actual_bs in enumerate(actual_eval_batch_sizes_for_this_process):
+        images: np.ndarray = pipeline(
+            prompt=[""] * actual_bs,
+            height=args.resolution,
+            width=args.resolution,
+            num_inference_steps=args.num_inference_steps,
+            guidance_scale=args.guidance_factor,
+            generator=generator,
+            output_type="np",
+        ).images
 
-        # pretty bar
-        if args.proba_uncond != 1:
-            postfix_str = f"Current class: {class_name} ({label+1}/{nb_classes})"
-            progress_bar.set_postfix_str(postfix_str)
-
-        # loop over eval batches for this process
-        for batch_idx, actual_bs in enumerate(actual_eval_batch_sizes_for_this_process):
-            if args.proba_uncond == 1:
-                class_emb = torch.zeros(
-                    (actual_bs, accelerator.unwrap_model(model).time_embed_dim)
-                ).to(accelerator.device)
-                class_labels = None
-            else:
-                class_labels = torch.full(
-                    (actual_bs,), label, device=pipeline.device
-                ).long()
-                class_emb = None
-            images = pipeline(
-                class_labels,
-                class_emb,
-                guidance_factor,
-                generator=generator,
-                batch_size=actual_bs,
-                num_inference_steps=args.ddim_num_inference_steps,
-                output_type="numpy",
-            ).images
-
-            # save images to disk
-            images_pil: list[Image] = pipeline.numpy_to_pil(images)
-            for idx, img in enumerate(images_pil):
-                tot_idx = args.eval_batch_size * batch_idx + idx
-                filename = (
-                    f"process_{accelerator.local_process_index}_sample_{tot_idx}.png"
+        # save images to disk
+        images_pil: list[Image] = pipeline.numpy_to_pil(images)
+        for idx, img in enumerate(images_pil):
+            tot_idx = args.eval_batch_size * batch_idx + idx
+            filename = f"process_{accelerator.local_process_index}_sample_{tot_idx}.png"
+            assert not Path(
+                filename
+            ).exists(), "Rewriting existing generated image file!"
+            img.save(
+                Path(
+                    image_generation_tmp_save_folder,
+                    filename,
                 )
-                assert not Path(filename).exists(
-                ), "Rewriting existing generated image file!"
-                img.save(
-                    Path(
-                        image_generation_tmp_save_folder,
-                        filename,
-                    )
-                )
+            )
 
-            # denormalize the images and save to logger if first batch
-            # (first batch of main process only to prevent "logger overflow")
-            if batch_idx == 0 and accelerator.is_main_process:
-                images_processed = (images * 255).round().astype("uint8")
+        # denormalize the images and save to logger if first batch
+        # (first batch of main process only to prevent "logger overflow")
+        if batch_idx == 0 and accelerator.is_main_process:
+            images_processed = (images * 255).round().astype("uint8")
+            accelerator.log(
+                {
+                    f"generated_samples": [
+                        wandb.Image(img) for img in images_processed[:50]
+                    ],
+                    "epoch": epoch,
+                },
+                step=global_step,
+            )
+        progress_bar.update()
 
-                if args.logger == "tensorboard":
-                    if is_accelerate_version(">=", "0.17.0.dev0"):
-                        tracker = accelerator.get_tracker(
-                            "tensorboard", unwrap=True)
-                    else:
-                        tracker = accelerator.get_tracker("tensorboard")
-                    tracker.add_images(
-                        "test_samples",
-                        images_processed.transpose(0, 3, 1, 2),
-                        epoch,
-                    )
-                elif args.logger == "wandb":
-                    # Upcoming `log_images` helper coming in https://github.com/huggingface/accelerate/pull/962/files
-                    if args.proba_uncond == 1:
-                        class_name = "unconditional"
-                    accelerator.log(
-                        {
-                            f"generated_samples/{class_name}": [
-                                wandb.Image(img) for img in images_processed[:50]
-                            ],
-                            "epoch": epoch,
-                        },
-                        step=global_step,
-                    )
-            progress_bar.update()
+    # wait for all processes to finish generating+saving images
+    accelerator.wait_for_everyone()
 
-        # wait for all processes to finish generating+saving images
-        accelerator.wait_for_everyone()
+    # Compute metrics
+    if accelerator.is_main_process:
+        accelerator.print(
+            f"Skipping metrics computation (unconditional generation)... TODO: implement!"
+        )
 
-        # Compute metrics
-        if accelerator.is_main_process:
-            if args.proba_uncond == 1:
-                accelerator.print(
-                    f"Skipping metrics computation (unconditional generation)... TODO: implement!")
-            else:
-                accelerator.print(
-                    f"Computing metrics for class {class_name}...")
-                metrics_dict = torch_fidelity.calculate_metrics(
-                    input1=args.train_data_dir + "/train" + f"/{class_name}",
-                    input2=image_generation_tmp_save_folder.as_posix(),
-                    cuda=True,
-                    batch_size=args.eval_batch_size,
-                    # isc=True,
-                    fid=True,
-                    # kid=True,
-                    # ppl=True,
-                    verbose=False,
-                    cache_root=".fidelity_cache",
-                    input1_cache_name=f"{class_name}",  # forces caching
-                    rng_seed=42,
-                )
-                for metric_name, metric_value in metrics_dict.items():
-                    accelerator.log(
-                        {
-                            f"{metric_name}/{class_name}": metric_value,
-                            "epoch": epoch,
-                        },
-                        step=global_step,
-                    )
-
-        # resync everybody for each class
-        accelerator.wait_for_everyone()
+    # resync everybody for each class
+    accelerator.wait_for_everyone()
 
     if args.use_ema:
         ema_model.restore(unet.parameters())
@@ -477,7 +418,10 @@ def generate_samples_and_compute_metrics(
 
 def checkpoint_model(
     accelerator,
-    model,
+    denoiser_model,
+    autoencoder_model,
+    text_encoder,
+    tokenizer,
     args,
     ema_model,
     noise_scheduler,
@@ -485,22 +429,28 @@ def checkpoint_model(
     repo,
     epoch,
 ):
-    # save the model
-    unet = accelerator.unwrap_model(model)
+    denoiser_model = accelerator.unwrap_model(denoiser_model)
 
     if args.use_ema:
-        ema_model.store(unet.parameters())
-        ema_model.copy_to(unet.parameters())
+        ema_model.store(denoiser_model.parameters())
+        ema_model.copy_to(denoiser_model.parameters())
 
-    pipeline = ConditionialDDIMPipeline(
-        unet=unet,
+    pipeline = StableDiffusionPipeline.from_pretrained(
+        args.pretrained_model_name_or_path,
+        vae=autoencoder_model,
+        text_encoder=text_encoder,
+        tokenizer=tokenizer,
+        unet=denoiser_model,
         scheduler=noise_scheduler,
+        safety_checker=None,
+        feature_extractor=None,
+        revision=args.revision,
     )
 
     pipeline.save_pretrained(full_pipeline_save_folder)
 
     if args.use_ema:
-        ema_model.restore(unet.parameters())
+        ema_model.restore(denoiser_model.parameters())
 
     if args.push_to_hub:
         repo.push_to_hub(commit_message=f"Epoch {epoch}", blocking=False)
