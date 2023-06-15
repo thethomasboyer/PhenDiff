@@ -1,0 +1,9 @@
+.vscode
+experiments
+wandb/
+run_script.zsh
+.fidelity_cache/
+*.pyc
+data/
+accelerate_configs
+.ipynb_checkpoints/
