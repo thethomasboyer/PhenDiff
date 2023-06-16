@@ -403,14 +403,13 @@ def generate_samples_and_compute_metrics(
     # wait for all processes to finish generating+saving images
     accelerator.wait_for_everyone()
 
-    # Compute metrics
+    # now compute metrics
     if accelerator.is_main_process:
         accelerator.print(
             f"Skipping metrics computation (unconditional generation)... TODO: implement!"
         )
-
-    # resync everybody for each class
-    accelerator.wait_for_everyone()
+        # clear the tmp folder
+        rmtree(image_generation_tmp_save_folder)
 
     if args.use_ema:
         ema_model.restore(unet.parameters())
@@ -425,6 +424,7 @@ def checkpoint_model(
     args,
     ema_model,
     noise_scheduler,
+    initial_pipeline_save_path,
     full_pipeline_save_folder,
     repo,
     epoch,
@@ -435,18 +435,21 @@ def checkpoint_model(
         ema_model.store(denoiser_model.parameters())
         ema_model.copy_to(denoiser_model.parameters())
 
+    # load the previously downloaded pipeline
     pipeline = StableDiffusionPipeline.from_pretrained(
-        args.pretrained_model_name_or_path,
-        vae=autoencoder_model,
-        text_encoder=text_encoder,
-        tokenizer=tokenizer,
+        initial_pipeline_save_path,
+        local_files_only=True,  # do not pull from hub during training
+        # then override modified components:
+        # vae=autoencoder_model,
+        # text_encoder=text_encoder,
+        # tokenizer=tokenizer,
         unet=denoiser_model,
         scheduler=noise_scheduler,
         safety_checker=None,
         feature_extractor=None,
-        revision=args.revision,
     )
 
+    # save to full_pipeline_save_folder (≠ initial_pipeline_save_path...)
     pipeline.save_pretrained(full_pipeline_save_folder)
 
     if args.use_ema:

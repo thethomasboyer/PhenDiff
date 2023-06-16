@@ -33,6 +33,12 @@ def parse_args():
         help="The name of or path to the pretrained pipeline.",
     )
     parser.add_argument(
+        "--learn_denoiser_from_scratch",
+        default=False,
+        action="store_true",
+        help="Wether or not to use the weights of the pretrained denoiser ('unet').",
+    )
+    parser.add_argument(
         "--revision",
         type=str,
         default=None,

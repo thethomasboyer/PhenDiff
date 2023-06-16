@@ -67,7 +67,7 @@ def args_checker(args):
         raise NotImplementedError("Velocity prediction is not implemented yet; TODO!")
 
 
-def create_repo_structure(args, accelerator):
+def create_repo_structure(args, accelerator) -> tuple[Path, Path, Path, None]:
     repo = None
     if args.push_to_hub:
         raise NotImplementedError()
@@ -88,10 +88,18 @@ def create_repo_structure(args, accelerator):
     elif args.output_dir is not None and accelerator.is_main_process:
         os.makedirs(args.output_dir, exist_ok=True)
 
-    # Create a folder to save the *full* pipeline
+    # Create a folder to save the pipeline during training
     full_pipeline_save_folder = Path(args.output_dir, "full_pipeline_save")
     if accelerator.is_main_process:
         os.makedirs(full_pipeline_save_folder, exist_ok=True)
+        
+    # Create a folder to save the *initial*, pretrained pipeline
+    # HF saves other things when downloading the pipeline (blobs, refs)
+    # that we are not interested in(?), hence the two folders.
+    # This is quite suboptimal though...
+    initial_pipeline_save_folder = Path(args.output_dir, ".initial_pipeline_save")
+    if accelerator.is_main_process:
+        os.makedirs(initial_pipeline_save_folder, exist_ok=True)
 
     # Create a temporary folder to save the generated images during training.
     # Used for metrics computations; a small number of these (eval_batch_size) is logged
@@ -99,7 +107,7 @@ def create_repo_structure(args, accelerator):
         args.output_dir, ".tmp_image_generation_folder"
     )
 
-    return image_generation_tmp_save_folder, full_pipeline_save_folder, repo
+    return image_generation_tmp_save_folder, initial_pipeline_save_folder, full_pipeline_save_folder, repo
 
 
 def setup_logger(logger, accelerator):

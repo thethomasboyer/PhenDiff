@@ -1,20 +1,22 @@
 import os
+from pathlib import Path
 
 import numpy as np
 import torch
-import wandb
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration
 from diffusers import (
     AutoencoderKL,
     DDIMScheduler,
+    StableDiffusionPipeline,
     UNet2DConditionModel,
 )
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import EMAModel
 from transformers import CLIPTextModel, CLIPTokenizer
 
+import wandb
 from src.args_parser import parse_args
 from src.utils_dataset import setup_dataset
 from src.utils_misc import (
@@ -69,6 +71,7 @@ def main(args):
     # ------------------- Repository scruture ------------------
     (
         image_generation_tmp_save_folder,
+        initial_pipeline_save_folder,
         full_pipeline_save_folder,
         repo,
     ) = create_repo_structure(args, accelerator)
@@ -84,29 +87,51 @@ def main(args):
     )
 
     # ------------------- Pretrained Pipeline ------------------
-    autoencoder_model: AutoencoderKL = AutoencoderKL.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision
-    )
-    denoiser_model: UNet2DConditionModel = UNet2DConditionModel.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision
-    )
-    text_encoder: CLIPTextModel = CLIPTextModel.from_pretrained(
+    # Download the full pretrained pipeline.
+    # Note that the actual folder to pull components from is
+    # initial_pipeline_save_folder/snapshots/<gibberish>/ (probably a hash?)
+    # hence the need to get the *true* save folder (initial_pipeline_save_path)
+    initial_pipeline_save_path = StableDiffusionPipeline.download(
         args.pretrained_model_name_or_path,
-        subfolder="text_encoder",
-        revision=args.revision,
-    )
-    tokenizer: CLIPTokenizer = CLIPTokenizer.from_pretrained(
-        args.pretrained_model_name_or_path,
-        subfolder="tokenizer",
-        revision=args.revision,
+        cache_dir=initial_pipeline_save_folder,
+        # override some useless components
+        safety_checker=None,
+        feature_extractor=None,
     )
 
-    # Move components to device and cast frozen ones to float16
+    # Load the pretrained components
+    autoencoder_model: AutoencoderKL = AutoencoderKL.from_pretrained(
+        initial_pipeline_save_path,
+        subfolder="vae",
+        local_files_only=True,
+    )
+    if args.learn_denoiser_from_scratch:
+        denoiser_model: UNet2DConditionModel = UNet2DConditionModel.from_config(
+            Path(initial_pipeline_save_path, "unet", "config.json"),
+        )
+    else:
+        denoiser_model: UNet2DConditionModel = UNet2DConditionModel.from_pretrained(
+            initial_pipeline_save_path,
+            subfolder="unet",
+            local_files_only=True,
+        )
+    text_encoder: CLIPTextModel = CLIPTextModel.from_pretrained(
+        initial_pipeline_save_path,
+        subfolder="text_encoder",
+        local_files_only=True,
+    )
+    tokenizer: CLIPTokenizer = CLIPTokenizer.from_pretrained(
+        initial_pipeline_save_path,
+        subfolder="tokenizer",
+        local_files_only=True,
+    )
+
+    # Move components to device
     autoencoder_model.to(accelerator.device)
     denoiser_model.to(accelerator.device)
     text_encoder.to(accelerator.device)
 
-    # Freeze components
+    # ❄️ >>> Freeze components <<< ❄️
     autoencoder_model.requires_grad_(False)
     text_encoder.requires_grad_(False)
 
@@ -247,6 +272,7 @@ def main(args):
                 args,
                 ema_unet,
                 noise_scheduler,
+                initial_pipeline_save_path,
                 full_pipeline_save_folder,
                 repo,
                 epoch,
