@@ -219,7 +219,7 @@ def perform_training_epoch(
             logs["ema_decay"] = ema_model.cur_decay_value
         progress_bar.set_postfix(**logs)
         accelerator.log(logs, step=global_step)
-        if math.isnan(loss_value):
+        if math.isnan(loss_value) and accelerator.is_main_process:
             wandb.alert(
                 title="NaN loss",
                 text=f"Loss is NaN at step {global_step} / epoch {epoch}",
@@ -309,7 +309,7 @@ def _forward_backward_pass(
         )
         gard_norm = accelerator.clip_grad_norm_(params_to_clip, 1.0)
         accelerator.log({"gradient norm": gard_norm}, step=global_step)
-        if gard_norm.isnan().any():
+        if gard_norm.isnan().any() and accelerator.is_main_process:
             wandb.alert(
                 title="NaN gradient norm",
                 text=f"The norm of the gradient is NaN at step {global_step}",
