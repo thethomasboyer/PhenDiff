@@ -6,18 +6,15 @@ import torch
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration
-from diffusers import (
-    AutoencoderKL,
-    DDIMScheduler,
-    StableDiffusionPipeline,
-    UNet2DConditionModel,
-)
+from diffusers import AutoencoderKL, DDIMScheduler, UNet2DConditionModel
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import EMAModel
-from transformers import CLIPTextModel, CLIPTokenizer
 
 import wandb
 from src.args_parser import parse_args
+from src.custom_pipeline_stable_diffusion_img2img import (
+    CustomStableDiffusionImg2ImgPipeline,
+)
 from src.utils_dataset import setup_dataset
 from src.utils_misc import (
     args_checker,
@@ -26,7 +23,7 @@ from src.utils_misc import (
     setup_xformers_memory_efficient_attention,
 )
 from src.utils_training import (
-    checkpoint_model,
+    save_model,
     generate_samples_and_compute_metrics,
     get_training_setup,
     perform_training_epoch,
@@ -38,7 +35,7 @@ logger = get_logger(__name__, log_level="INFO")
 
 def main(args):
     # ------------------------- Checks -------------------------
-    args_checker(args)
+    args_checker(args, logger)
 
     # ----------------------- Accelerator ----------------------
     accelerator_project_config = ProjectConfiguration(
@@ -68,7 +65,7 @@ def main(args):
     # Make one log on every process with the configuration for debugging.
     setup_logger(logger, accelerator)
 
-    # ------------------- Repository scruture ------------------
+    # ------------------ Repository Structure ------------------
     (
         image_generation_tmp_save_folder,
         initial_pipeline_save_folder,
@@ -91,12 +88,9 @@ def main(args):
     # Note that the actual folder to pull components from is
     # initial_pipeline_save_folder/snapshots/<gibberish>/ (probably a hash?)
     # hence the need to get the *true* save folder (initial_pipeline_save_path)
-    initial_pipeline_save_path = StableDiffusionPipeline.download(
+    initial_pipeline_save_path = CustomStableDiffusionImg2ImgPipeline.download(
         args.pretrained_model_name_or_path,
         cache_dir=initial_pipeline_save_folder,
-        # override some useless components
-        safety_checker=None,
-        feature_extractor=None,
     )
 
     # Load the pretrained components
@@ -106,8 +100,11 @@ def main(args):
         local_files_only=True,
     )
     if args.learn_denoiser_from_scratch:
-        denoiser_model: UNet2DConditionModel = UNet2DConditionModel.from_config(
+        denoiser_model_config = UNet2DConditionModel.load_config(
             Path(initial_pipeline_save_path, "unet", "config.json"),
+        )
+        denoiser_model: UNet2DConditionModel = UNet2DConditionModel.from_config(
+            denoiser_model_config,
         )
     else:
         denoiser_model: UNet2DConditionModel = UNet2DConditionModel.from_pretrained(
@@ -115,27 +112,36 @@ def main(args):
             subfolder="unet",
             local_files_only=True,
         )
-    text_encoder: CLIPTextModel = CLIPTextModel.from_pretrained(
-        initial_pipeline_save_path,
-        subfolder="text_encoder",
-        local_files_only=True,
-    )
-    tokenizer: CLIPTokenizer = CLIPTokenizer.from_pretrained(
-        initial_pipeline_save_path,
-        subfolder="tokenizer",
-        local_files_only=True,
-    )
 
+    denoiser_model.time_embed_dim = 1024  # TODO: fix this hack
+
+    # ------------------ Custom Class Embeddings ---------------
+    match args.class_embedding_type:
+        case "one_hot":
+            raise NotImplementedError(
+                "Dimensions will mismatch with one-hot encoding; TODO: fix"
+            )
+            # class_embedding = torch.nn.functional.one_hot(torch.arange(nb_classes))
+            # ..?
+            # class_embedding.to(accelerator.device)
+        case "embedding":
+            class_embedding = torch.nn.Embedding(nb_classes, args.class_embedding_dim)
+            class_embedding.to(accelerator.device)
+            class_embedding.dtype = torch.float32  # hard fix for accelerate(?!)
+        case _:
+            raise ValueError(
+                f"Unrecognized class embedding type: {args.class_embedding_type}"
+            )
+
+    # ---------------- Move & Freeze Components ----------------
     # Move components to device
     autoencoder_model.to(accelerator.device)
     denoiser_model.to(accelerator.device)
-    text_encoder.to(accelerator.device)
 
     # ❄️ >>> Freeze components <<< ❄️
     autoencoder_model.requires_grad_(False)
-    text_encoder.requires_grad_(False)
 
-    # --------------------- Noise scheduler --------------------
+    # --------------------- Noise Scheduler --------------------
     noise_scheduler = DDIMScheduler(
         num_train_timesteps=args.num_training_steps,
         beta_start=args.beta_start,
@@ -174,7 +180,7 @@ def main(args):
         eps=args.adam_epsilon,
     )
 
-    # ----------------- Learning rate scheduler -----------------
+    # ----------------- Learning Rate Scheduler -----------------
     lr_scheduler = get_scheduler(
         args.lr_scheduler,
         optimizer=optimizer,
@@ -182,12 +188,24 @@ def main(args):
         num_training_steps=(len(train_dataloader) * args.num_epochs),
     )
 
-    # ------------------ Distributed compute  ------------------
-    denoiser_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        denoiser_model, optimizer, train_dataloader, lr_scheduler
+    # ------------------ Distributed Compute  ------------------
+    (
+        denoiser_model,
+        optimizer,
+        train_dataloader,
+        lr_scheduler,
+        class_embedding,
+        autoencoder_model,
+    ) = accelerator.prepare(
+        denoiser_model,
+        optimizer,
+        train_dataloader,
+        lr_scheduler,
+        class_embedding,
+        autoencoder_model,
     )
 
-    # --------------------- Training setup ---------------------
+    # --------------------- Training Setup ---------------------
     if args.use_ema:
         ema_unet.to(accelerator.device)
 
@@ -207,7 +225,7 @@ def main(args):
         actual_eval_batch_sizes_for_this_process,
     ) = get_training_setup(args, accelerator, train_dataloader, logger, dataset)
 
-    # ----------------- Resume from checkpoint -----------------
+    # ----------------- Resume from Checkpoint -----------------
     if args.resume_from_checkpoint:
         first_epoch, resume_step, global_step = resume_from_checkpoint(
             args, logger, accelerator, num_update_steps_per_epoch, global_step
@@ -220,55 +238,53 @@ def main(args):
     for epoch in range(first_epoch, args.num_epochs):
         # Training epoch
         global_step = perform_training_epoch(
-            denoiser_model,
-            autoencoder_model,
-            tokenizer,
-            text_encoder,
-            num_update_steps_per_epoch,
-            accelerator,
-            epoch,
-            train_dataloader,
-            args,
-            first_epoch,
-            resume_step,
-            noise_scheduler,
-            global_step,
-            optimizer,
-            lr_scheduler,
-            ema_unet,
-            logger,
+            rng,
+            denoiser_model=denoiser_model,
+            autoencoder_model=autoencoder_model,
+            num_update_steps_per_epoch=num_update_steps_per_epoch,
+            accelerator=accelerator,
+            epoch=epoch,
+            train_dataloader=train_dataloader,
+            args=args,
+            first_epoch=first_epoch,
+            resume_step=resume_step,
+            noise_scheduler=noise_scheduler,
+            global_step=global_step,
+            optimizer=optimizer,
+            lr_scheduler=lr_scheduler,
+            ema_model=ema_unet,
+            logger=logger,
+            class_embedding=class_embedding,
         )
 
         # Generate sample images for visual inspection & metrics computation
-        if (
-            epoch % args.save_images_epochs == 0 or epoch == args.num_epochs - 1
-        ) and epoch > 0:
+        if epoch % args.generate_images_epochs == 0:
             generate_samples_and_compute_metrics(
-                args,
-                accelerator,
-                denoiser_model,
-                ema_unet,
-                autoencoder_model,
-                text_encoder,
-                tokenizer,
-                noise_scheduler,
-                image_generation_tmp_save_folder,
-                actual_eval_batch_sizes_for_this_process,
-                epoch,
-                global_step,
+                args=args,
+                accelerator=accelerator,
+                denoiser_model=denoiser_model,
+                class_embedding=class_embedding,
+                ema_model=ema_unet,
+                noise_scheduler=noise_scheduler,
+                image_generation_tmp_save_folder=image_generation_tmp_save_folder,
+                actual_eval_batch_sizes_for_this_process=actual_eval_batch_sizes_for_this_process,
+                epoch=epoch,
+                global_step=global_step,
+                initial_pipeline_save_path=initial_pipeline_save_path,
+                nb_classes=nb_classes,
+                logger=logger,
+                dataset=dataset,
             )
 
         if (
             accelerator.is_main_process
-            and (epoch % args.save_model_epochs == 0 or epoch == args.num_epochs - 1)
+            and epoch % args.save_model_epochs == 0
             and epoch != 0
         ):
-            checkpoint_model(
+            save_model(
                 accelerator,
                 denoiser_model,
-                autoencoder_model,
-                text_encoder,
-                tokenizer,
+                class_embedding,
                 args,
                 ema_unet,
                 noise_scheduler,
@@ -279,6 +295,7 @@ def main(args):
             )
 
         # do not start new epoch before generation & checkpointing is done
+        # (note that checkpointing may start a BG process?)
         accelerator.wait_for_everyone()
 
     accelerator.end_training()

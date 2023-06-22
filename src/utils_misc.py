@@ -55,7 +55,7 @@ def split(l, n, idx):
     return l[idx]
 
 
-def args_checker(args):
+def args_checker(args, logger):
     assert args.use_pytorch_loader, "Only PyTorch loader is supported for now."
 
     if args.dataset_name is None and args.train_data_dir is None:
@@ -65,6 +65,16 @@ def args_checker(args):
 
     if args.prediction_type == "velocity":
         raise NotImplementedError("Velocity prediction is not implemented yet; TODO!")
+
+    if args.guidance_factor <= 1:
+        logger.warning(
+            "The guidance factor is <= 1: classifier free guidance will not be performed"
+        )
+
+    if args.compute_kid and (args.nb_generated_images < args.kid_subset_size):
+        raise ValueError(
+            f"'nb_generated_images' (={args.nb_generated_images}) must be >= 'kid_subset_size' (={args.kid_subset_size})"
+        )
 
 
 def create_repo_structure(args, accelerator) -> tuple[Path, Path, Path, None]:
@@ -92,12 +102,12 @@ def create_repo_structure(args, accelerator) -> tuple[Path, Path, Path, None]:
     full_pipeline_save_folder = Path(args.output_dir, "full_pipeline_save")
     if accelerator.is_main_process:
         os.makedirs(full_pipeline_save_folder, exist_ok=True)
-        
+
     # Create a folder to save the *initial*, pretrained pipeline
     # HF saves other things when downloading the pipeline (blobs, refs)
     # that we are not interested in(?), hence the two folders.
     # This is quite suboptimal though...
-    initial_pipeline_save_folder = Path(args.output_dir, ".initial_pipeline_save")
+    initial_pipeline_save_folder = Path(".initial_pipeline_save")
     if accelerator.is_main_process:
         os.makedirs(initial_pipeline_save_folder, exist_ok=True)
 
@@ -107,7 +117,12 @@ def create_repo_structure(args, accelerator) -> tuple[Path, Path, Path, None]:
         args.output_dir, ".tmp_image_generation_folder"
     )
 
-    return image_generation_tmp_save_folder, initial_pipeline_save_folder, full_pipeline_save_folder, repo
+    return (
+        image_generation_tmp_save_folder,
+        initial_pipeline_save_folder,
+        full_pipeline_save_folder,
+        repo,
+    )
 
 
 def setup_logger(logger, accelerator):

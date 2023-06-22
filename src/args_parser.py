@@ -119,16 +119,25 @@ def parse_args():
     )
     parser.add_argument("--num_epochs", type=int, default=100)
     parser.add_argument(
-        "--save_images_epochs",
+        "--generate_images_epochs",
         type=int,
         default=100,
         help="How often to save images during training.",
     )
+    parser.add_argument("--compute_fid", action="store_true")
+    parser.add_argument("--compute_isc", action="store_true")
+    parser.add_argument("--compute_kid", action="store_true")
     help_msg = "How many images to generate (per class) for metrics computation. "
     help_msg += (
         "Only a fraction of the first batch will be logged; the rest will be lost."
     )
     parser.add_argument("--nb_generated_images", type=int, default=1000, help=help_msg)
+    parser.add_argument(
+        "--kid_subset_size",
+        type=int,
+        default=1000,
+        help="Change this if generating very few images (for testing purposes only)",
+    )
     parser.add_argument(
         "--save_model_epochs",
         type=int,
@@ -138,8 +147,33 @@ def parse_args():
     parser.add_argument(
         "--guidance_factor",
         type=float,
-        help="The scaling factor of the guidance ('ω' in the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf; *not* the same definition that in the Classifier-Free Diffusion Guidance paper!). Set to 1 to disable guidance.",
+        help="The scaling factor of the guidance ('ω' in the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf; *not* the same definition that in the Classifier-Free Diffusion Guidance paper!). Set to <= 1 to disable guidance.",
     )
+    parser.add_argument(
+        "--proba_uncond",
+        type=float,
+        default=0.1,
+        help="The probability of sampling unconditionally instead of conditionally for the CLF.",
+    )
+    parser.add_argument(
+        "--class_embedding_type",
+        type=str,
+        default="embedding",
+        choices=["OHE", "embedding"],
+        help="The kind of class embedding to use.",
+    )
+    parser.add_argument(
+        "--class_embedding_dim",
+        type=int,
+        default=1024,
+        help="The dimension of the class embedding.",
+    )
+    # TODO: To be used if testing img2img while training
+    # parser.add_argument(
+    #     "--denoising_starting_point",
+    #     type=float,
+    #     help="The starting point of the denoising schedule (between 0 and 1).",
+    # )
     parser.add_argument(
         "--gradient_accumulation_steps",
         type=int,
