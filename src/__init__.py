@@ -8,7 +8,7 @@ from .utils_misc import (
     setup_xformers_memory_efficient_attention,
 )
 from .utils_training import (
-    save_model,
+    save_pipeline,
     generate_samples_and_compute_metrics,
     get_training_setup,
     perform_training_epoch,

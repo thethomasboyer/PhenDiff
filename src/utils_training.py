@@ -1,3 +1,4 @@
+import math
 import os
 from math import ceil
 from pathlib import Path
@@ -110,7 +111,6 @@ def get_training_setup(args, accelerator, train_dataloader, logger, dataset):
 
 
 def perform_training_epoch(
-    rng,
     denoiser_model: UNet2DConditionModel,
     autoencoder_model: AutoencoderKL,
     num_update_steps_per_epoch,
@@ -127,6 +127,7 @@ def perform_training_epoch(
     ema_model: None | EMAModel,
     logger,
     class_embedding: Callable | torch.nn.Embedding,
+    do_uncond_pass_across_all_procs: torch.BoolTensor,
 ):
     # set model to train mode
     denoiser_model.train()
@@ -154,6 +155,7 @@ def perform_training_epoch(
             class_labels = batch["class_labels"]
 
         # Convert images to latent space
+        autoencoder_model = accelerator.unwrap_model(autoencoder_model)
         latents = autoencoder_model.encode(clean_images).latent_dist.sample()
         latents = latents * autoencoder_model.config.scaling_factor
         # TODO: what is this ↑?
@@ -173,9 +175,11 @@ def perform_training_epoch(
         # (this is the forward diffusion process)
         noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
+        # Unconditional pass for CLF guidance training
+        do_unconditional_pass: bool = do_uncond_pass_across_all_procs[step].item()
+
         with accelerator.accumulate(denoiser_model):
             loss_value = _forward_backward_pass(
-                rng,
                 args=args,
                 accelerator=accelerator,
                 global_step=global_step,
@@ -189,6 +193,7 @@ def perform_training_epoch(
                 optimizer=optimizer,
                 lr_scheduler=lr_scheduler,
                 class_embedding=class_embedding,
+                do_unconditional_pass=do_unconditional_pass,
             )
 
         # Checks if the accelerator has performed an optimization step behind the scenes
@@ -203,6 +208,7 @@ def perform_training_epoch(
                 logger,
             )
 
+        # log some values & define W&B alert
         logs = {
             "loss": loss_value,
             "lr": lr_scheduler.get_last_lr()[0],
@@ -213,6 +219,13 @@ def perform_training_epoch(
             logs["ema_decay"] = ema_model.cur_decay_value
         progress_bar.set_postfix(**logs)
         accelerator.log(logs, step=global_step)
+        if math.isnan(loss_value):
+            wandb.alert(
+                title="NaN loss",
+                text=f"Loss is NaN at step {global_step} / epoch {epoch}",
+                level=wandb.AlertLevel.ERROR,
+                wait_duration=21600,  # 6 hours
+            )
     progress_bar.close()
 
     # wait for everybody at each end of training epoch
@@ -222,7 +235,6 @@ def perform_training_epoch(
 
 
 def _forward_backward_pass(
-    rng,
     args,
     accelerator,
     global_step,
@@ -236,11 +248,9 @@ def _forward_backward_pass(
     optimizer,
     lr_scheduler,
     class_embedding: Callable | torch.nn.Embedding,
+    do_unconditional_pass: bool,
 ):
     # classifier-free guidance: randomly discard conditioning to train unconditionally
-    do_unconditional_pass = rng.random() < args.proba_uncond
-    #  torch.rand(1) < args.proba_uncond ?
-    # print(f"===> DEBUG do_unconditional_pass: {do_unconditional_pass}, device: {accelerator.device}")
     accelerator.log(
         {
             "unconditional step": int(do_unconditional_pass),
@@ -294,8 +304,18 @@ def _forward_backward_pass(
     accelerator.backward(loss)
 
     if accelerator.sync_gradients:
-        gard_norm = accelerator.clip_grad_norm_(denoiser_model.parameters(), 1.0)
+        params_to_clip = list(denoiser_model.parameters()) + list(
+            class_embedding.parameters()
+        )
+        gard_norm = accelerator.clip_grad_norm_(params_to_clip, 1.0)
         accelerator.log({"gradient norm": gard_norm}, step=global_step)
+        if gard_norm.isnan().any():
+            wandb.alert(
+                title="NaN gradient norm",
+                text=f"The norm of the gradient is NaN at step {global_step}",
+                level=wandb.AlertLevel.ERROR,
+                wait_duration=21600,  # 6 hours
+            )
     optimizer.step()
     lr_scheduler.step()
     optimizer.zero_grad()
@@ -357,7 +377,7 @@ def generate_samples_and_compute_metrics(
     progress_bar = tqdm(
         total=len(actual_eval_batch_sizes_for_this_process),
         desc=f"Generating images on process {accelerator.process_index}",
-        # disable=not accelerator.is_local_main_process,
+        disable=not accelerator.is_local_main_process,
     )
     unet = accelerator.unwrap_model(denoiser_model)
     class_embedding = accelerator.unwrap_model(class_embedding)
@@ -437,7 +457,7 @@ def generate_samples_and_compute_metrics(
                 images_processed = (images * 255).round().astype("uint8")
                 accelerator.log(
                     {
-                        f"generated_samples/{class_label}": [
+                        f"generated_samples/{class_name}": [
                             wandb.Image(img) for img in images_processed[:50]
                         ],
                         "epoch": epoch,
@@ -523,7 +543,7 @@ def generate_samples_and_compute_metrics(
 
 
 @torch.no_grad()
-def save_model(
+def save_pipeline(
     accelerator,
     denoiser_model: UNet2DConditionModel,
     class_embedding,

@@ -23,7 +23,7 @@ from src.utils_misc import (
     setup_xformers_memory_efficient_attention,
 )
 from src.utils_training import (
-    save_model,
+    save_pipeline,
     generate_samples_and_compute_metrics,
     get_training_setup,
     perform_training_epoch,
@@ -44,14 +44,11 @@ def main(args):
         project_dir=args.output_dir,
     )
 
-    kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
-
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
         log_with=args.logger,
         project_config=accelerator_project_config,
-        kwargs_handlers=[kwargs],
     )
 
     # -------------------------- WandB -------------------------
@@ -126,8 +123,8 @@ def main(args):
             # class_embedding.to(accelerator.device)
         case "embedding":
             class_embedding = torch.nn.Embedding(nb_classes, args.class_embedding_dim)
-            class_embedding.to(accelerator.device)
-            class_embedding.dtype = torch.float32  # hard fix for accelerate(?!)
+            # hard fix for using class_embedding in the pipeline @ inference...
+            class_embedding.dtype = torch.float32
         case _:
             raise ValueError(
                 f"Unrecognized class embedding type: {args.class_embedding_type}"
@@ -137,6 +134,7 @@ def main(args):
     # Move components to device
     autoencoder_model.to(accelerator.device)
     denoiser_model.to(accelerator.device)
+    class_embedding.to(accelerator.device)
 
     # ❄️ >>> Freeze components <<< ❄️
     autoencoder_model.requires_grad_(False)
@@ -166,6 +164,7 @@ def main(args):
 
     if args.enable_xformers_memory_efficient_attention:
         setup_xformers_memory_efficient_attention(denoiser_model, logger)
+        setup_xformers_memory_efficient_attention(autoencoder_model, logger)
 
     # track gradients
     if accelerator.is_main_process:
@@ -173,7 +172,7 @@ def main(args):
 
     # ------------------------ Optimizer -----------------------
     optimizer = torch.optim.AdamW(
-        denoiser_model.parameters(),
+        list(denoiser_model.parameters()) + list(class_embedding.parameters()),
         lr=args.learning_rate,
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.adam_weight_decay,
@@ -189,6 +188,10 @@ def main(args):
     )
 
     # ------------------ Distributed Compute  ------------------
+    # get the total len of the dataloader before distributing it
+    total_dataloader_len = len(train_dataloader)
+
+    # prepare distributed training with 🤗's magic
     (
         denoiser_model,
         optimizer,
@@ -204,6 +207,22 @@ def main(args):
         class_embedding,
         autoencoder_model,
     )
+
+    # synchronize the conditional & unconditional passes of CLF guidance training between the GPUs
+    # to circumvent a nasty and unexplained bug...
+    do_uncond_pass_across_all_procs: torch.BoolTensor = torch.zeros(
+        (total_dataloader_len,), device=accelerator.device, dtype=torch.bool
+    )
+    if accelerator.is_main_process:
+        # fill tensor on main proc
+        for batch_idx in range(total_dataloader_len):
+            do_uncond_pass_across_all_procs[batch_idx] = (
+                torch.rand(1) < args.proba_uncond
+            )
+        # broadcast tensor to all procs
+        main_proc_rank = torch.distributed.get_rank()
+        assert main_proc_rank == 0, f"Main proc rank is not 0 but {main_proc_rank}"
+    torch.distributed.broadcast(do_uncond_pass_across_all_procs, 0)
 
     # --------------------- Training Setup ---------------------
     if args.use_ema:
@@ -231,14 +250,10 @@ def main(args):
             args, logger, accelerator, num_update_steps_per_epoch, global_step
         )
 
-    # ---------------------- Seeds & RNGs ----------------------
-    rng = np.random.default_rng()  # TODO: seed this
-
     # ---------------------- Training loop ---------------------
     for epoch in range(first_epoch, args.num_epochs):
         # Training epoch
         global_step = perform_training_epoch(
-            rng,
             denoiser_model=denoiser_model,
             autoencoder_model=autoencoder_model,
             num_update_steps_per_epoch=num_update_steps_per_epoch,
@@ -255,6 +270,7 @@ def main(args):
             ema_model=ema_unet,
             logger=logger,
             class_embedding=class_embedding,
+            do_uncond_pass_across_all_procs=do_uncond_pass_across_all_procs,
         )
 
         # Generate sample images for visual inspection & metrics computation
@@ -281,7 +297,7 @@ def main(args):
             and epoch % args.save_model_epochs == 0
             and epoch != 0
         ):
-            save_model(
+            save_pipeline(
                 accelerator,
                 denoiser_model,
                 class_embedding,
