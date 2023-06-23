@@ -14,6 +14,7 @@
 
 import inspect
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from warnings import warn
 
 import numpy as np
 import PIL
@@ -64,7 +65,7 @@ class CustomStableDiffusionImg2ImgPipeline(
         scheduler ([`SchedulerMixin`]):
             A scheduler to be used in combination with `unet` to denoise the encoded image latents. Can be one of
             [`DDIMScheduler`], [`LMSDiscreteScheduler`], or [`PNDMScheduler`].
-        class_embeddings (`torch.nn.Embedding`):
+        class_embedding (`torch.nn.Embedding`):
             The frozen embedding layer to use for the class conditioning.
     """
 
@@ -73,7 +74,7 @@ class CustomStableDiffusionImg2ImgPipeline(
         vae: AutoencoderKL,
         unet: UNet2DConditionModel,
         scheduler: KarrasDiffusionSchedulers,
-        class_embeddings: torch.nn.Embedding,
+        class_embedding: torch.nn.Embedding,
     ):
         super().__init__()
 
@@ -147,7 +148,7 @@ class CustomStableDiffusionImg2ImgPipeline(
             vae=vae,
             unet=unet,
             scheduler=scheduler,
-            class_embeddings=class_embeddings,
+            class_embedding=class_embedding,
         )
         self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor)
@@ -229,7 +230,7 @@ class CustomStableDiffusionImg2ImgPipeline(
     # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline._encode_prompt
     def _encode_class(
         self,
-        class_labels,
+        class_labels: Optional[Union[int, List[int], torch.Tensor]],
         device,
         do_classifier_free_guidance,
         class_labels_embeds: Optional[torch.FloatTensor] = None,
@@ -239,8 +240,8 @@ class CustomStableDiffusionImg2ImgPipeline(
         Encodes the class label into an embedding space.
 
         Args:
-            class_labels (`int` or `List[int]`, *optional*):
-                class indexes to be encoded
+            class_labels (`int` or `List[int]` or `torch.Tensor`, *optional*):
+                class indexes to be encoded; if Tensor should be 1D
             device: (`torch.device`):
                 torch device
             do_classifier_free_guidance (`bool`):
@@ -259,25 +260,28 @@ class CustomStableDiffusionImg2ImgPipeline(
         if class_labels is not None:
             if isinstance(class_labels, int):
                 batch_size = 1
+                class_labels = torch.tensor([class_labels]).long()
             elif isinstance(class_labels, list):
                 batch_size = len(class_labels)
+                class_labels = torch.tensor(class_labels).long()
             elif isinstance(class_labels, torch.Tensor):
+                class_labels = class_labels.long()
                 batch_size = class_labels.shape[0]
         else:
             batch_size = class_labels_embeds.shape[0]
 
         if class_labels_embeds is None:
-            class_labels_embeds = self.class_embeddings(class_labels)
+            class_labels_embeds = self.class_embedding(class_labels)
 
         class_labels_embeds = class_labels_embeds.to(
-            dtype=self.class_embeddings.dtype, device=device
+            dtype=self.class_embedding.dtype, device=device
         )
 
         # get unconditional embeddings for classifier free guidance
         if do_classifier_free_guidance:
-            uncond_embeds = torch.zeros((batch_size, self.unet.time_embed_dim)).to(
-                class_labels.device
-            )
+            uncond_embeds = torch.zeros(
+                (batch_size, self.unet.config.cross_attention_dim)
+            ).to(class_labels.device)
 
             # For classifier free guidance, we need to do two forward passes.
             # Here we concatenate the unconditional and text embeddings into a single batch
@@ -313,11 +317,25 @@ class CustomStableDiffusionImg2ImgPipeline(
         class_labels,
         strength,
         callback_steps,
-        class_labels_embeds=None,
+        class_labels_embeds,
+        latent_shape,
+        image,
     ):
+        if image is None and latent_shape is None:
+            raise ValueError(
+                "Either `image` or `latent_shape` must be provided as input."
+            )
+
         if strength < 0 or strength > 1:
             raise ValueError(
-                f"The value of strength should in [0.0, 1.0] but is {strength}"
+                f"The value of strength should be in [0, 1] but is {strength}"
+            )
+
+        if image is None and strength != 1:
+            warn(
+                "`image` is None so the generation will start from pure Gaussian noise, "
+                "but `strength` is not set to 1 so the denoising process will not run for the full denoising trajectory."
+                "This will produce images that are not fully denoised."
             )
 
         if (callback_steps is None) or (
@@ -347,8 +365,8 @@ class CustomStableDiffusionImg2ImgPipeline(
                 f"`class_labels` has to be of type `int` or `list` or `torch.Tensor` but is {type(class_labels)}"
             )
 
-        if isinstance(class_labels, torch.Tensor) and class_labels.dim() != 1:
-            raise ValueError("If a Tensor `class_labels` should be a 1D")
+        if isinstance(class_labels, torch.Tensor) and class_labels.ndim != 1:
+            raise ValueError("If a Tensor `class_labels` should be 1D")
 
     def get_timesteps(self, num_inference_steps, strength, device):
         # get the original timestep using init_timestep
@@ -379,13 +397,17 @@ class CustomStableDiffusionImg2ImgPipeline(
                 f"`image` has to be of type `torch.Tensor`, `PIL.Image.Image`, list, or `None`, but is {type(image)}"
             )
 
+        # image=None means generation not conditioned on any original image;
+        # so just generate from Gaussian noise
         if image is None:
             init_latents = torch.randn(latent_shape, device=device, dtype=dtype)
             return init_latents
 
         image = image.to(device=device, dtype=dtype)
 
-        if image.shape[1] == 4:  # image is already a latent vector
+        if image.shape[1] == 4:
+            # image is already a latent vector
+            # ugly hardcoded test...
             init_latents = image
         else:
             if isinstance(generator, list) and len(generator) != batch_size:
@@ -407,8 +429,9 @@ class CustomStableDiffusionImg2ImgPipeline(
 
         init_latents = torch.cat([init_latents], dim=0)
 
-        shape = init_latents.shape
-        noise = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
+        noise = randn_tensor(
+            init_latents.shape, generator=generator, device=device, dtype=dtype
+        )
 
         # get latents
         init_latents = self.scheduler.add_noise(init_latents, noise, timestep)
@@ -418,15 +441,16 @@ class CustomStableDiffusionImg2ImgPipeline(
     @torch.no_grad()
     def __call__(
         self,
-        image: Union[
-            torch.FloatTensor,
-            PIL.Image.Image,
-            List[PIL.Image.Image],
-            np.ndarray,
-            None,
+        image: Optional[
+            Union[
+                torch.FloatTensor,
+                PIL.Image.Image,
+                List[PIL.Image.Image],
+                np.ndarray,
+            ]
         ] = None,
         latent_shape: Optional[Tuple[int, ...]] = None,
-        class_labels: Optional[Union[int, List[int]]] = None,
+        class_labels: Optional[Union[int, List[int], torch.Tensor]] = None,
         strength: float = 0.8,
         num_inference_steps: Optional[int] = 50,
         guidance_scale: Optional[float] = 7.5,
@@ -437,6 +461,7 @@ class CustomStableDiffusionImg2ImgPipeline(
         callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
         callback_steps: int = 1,
         cross_attention_kwargs: Optional[Dict[str, Any]] = None,
+        device: Optional[Union[torch.device, str]] = None,
     ) -> Union[List[PIL.Image.Image], np.ndarray]:
         r"""
         Generation method. Returns a list of PIL images or a numpy array corresponding to the generated images from the
@@ -458,7 +483,8 @@ class CustomStableDiffusionImg2ImgPipeline(
                 will be used as a starting point, adding more noise to it the larger the `strength`. The number of
                 denoising steps depends on the amount of noise initially added. When `strength` is 1, added noise will
                 be maximum and the denoising process will run for the full number of iterations specified in
-                `num_inference_steps`. A value of 1, therefore, essentially ignores `image`.
+                `num_inference_steps`. A value of 1, therefore, essentially ignores `image`. If `image` is `None`, strength
+                should be set to 1 (and not noise will actually be added to the generated, allready pure Gaussian noise).
             num_inference_steps (`int`, *optional*, defaults to 50):
                 The number of denoising steps. More denoising steps usually lead to a higher quality image at the
                 expense of slower inference. This parameter will be modulated by `strength`.
@@ -501,6 +527,8 @@ class CustomStableDiffusionImg2ImgPipeline(
             strength=strength,
             callback_steps=callback_steps,
             class_labels_embeds=class_labels_embeds,
+            latent_shape=latent_shape,
+            image=image,
         )
 
         # 2. Define call parameters
@@ -513,7 +541,16 @@ class CustomStableDiffusionImg2ImgPipeline(
         else:
             batch_size = class_labels_embeds.shape[0]
 
-        device = self._execution_device
+        # This call to self._execution_device sometimes fails unexpectedly...
+        # -> override self._execution_device with user input if needed
+        try:
+            device = self._execution_device
+        except AttributeError as e:
+            warn(
+                f"Call to self._execution_device failed: {e}\nUsing `device`={device} input argument instead."
+            )
+            device = device
+
         # here `guidance_scale` is defined analog to the guidance weight `w` of equation (2)
         # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`
         # corresponds to doing no classifier free guidance.
@@ -532,6 +569,10 @@ class CustomStableDiffusionImg2ImgPipeline(
             class_labels_embeds=class_labels_embeds,
             lora_scale=lora_scale,
         )
+
+        # hack to match the expected encoder_hidden_states shape
+        (bs, ed) = class_labels_embeds.shape
+        class_labels_embeds = class_labels_embeds.reshape(bs, 1, ed).repeat(1, 77, 1)
 
         # 4. Preprocess image
         if image is not None:

@@ -14,3 +14,7 @@ from .utils_training import (
     perform_training_epoch,
     resume_from_checkpoint,
 )
+from .custom_embedding import CustomEmbedding
+from .custom_pipeline_stable_diffusion_img2img import (
+    CustomStableDiffusionImg2ImgPipeline,
+)

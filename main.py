@@ -1,20 +1,22 @@
 import os
 from pathlib import Path
 
-import numpy as np
 import torch
 from accelerate import Accelerator
-from accelerate.logging import get_logger
-from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration
-from diffusers import AutoencoderKL, DDIMScheduler, UNet2DConditionModel
+from accelerate.logging import MultiProcessAdapter, get_logger
+from accelerate.utils import ProjectConfiguration
+from diffusers import (
+    AutoencoderKL,
+    DDIMScheduler,
+    StableDiffusionImg2ImgPipeline,
+    UNet2DConditionModel,
+)
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import EMAModel
 
 import wandb
 from src.args_parser import parse_args
-from src.custom_pipeline_stable_diffusion_img2img import (
-    CustomStableDiffusionImg2ImgPipeline,
-)
+from src.custom_embedding import CustomEmbedding
 from src.utils_dataset import setup_dataset
 from src.utils_misc import (
     args_checker,
@@ -23,14 +25,14 @@ from src.utils_misc import (
     setup_xformers_memory_efficient_attention,
 )
 from src.utils_training import (
-    save_pipeline,
     generate_samples_and_compute_metrics,
     get_training_setup,
     perform_training_epoch,
     resume_from_checkpoint,
+    save_pipeline,
 )
 
-logger = get_logger(__name__, log_level="INFO")
+logger: MultiProcessAdapter = get_logger(__name__, log_level="INFO")
 
 
 def main(args):
@@ -85,7 +87,7 @@ def main(args):
     # Note that the actual folder to pull components from is
     # initial_pipeline_save_folder/snapshots/<gibberish>/ (probably a hash?)
     # hence the need to get the *true* save folder (initial_pipeline_save_path)
-    initial_pipeline_save_path = CustomStableDiffusionImg2ImgPipeline.download(
+    initial_pipeline_save_path = StableDiffusionImg2ImgPipeline.download(
         args.pretrained_model_name_or_path,
         cache_dir=initial_pipeline_save_folder,
     )
@@ -110,9 +112,9 @@ def main(args):
             local_files_only=True,
         )
 
-    denoiser_model.time_embed_dim = 1024  # TODO: fix this hack
-
-    # ------------------ Custom Class Embeddings ---------------
+    # ----------------- Custom Class Embeddings ----------------
+    # create a custom class inheriting from diffusers.ModelMixin
+    # in order to use Hugging Face's routines
     match args.class_embedding_type:
         case "one_hot":
             raise NotImplementedError(
@@ -122,9 +124,7 @@ def main(args):
             # ..?
             # class_embedding.to(accelerator.device)
         case "embedding":
-            class_embedding = torch.nn.Embedding(nb_classes, args.class_embedding_dim)
-            # hard fix for using class_embedding in the pipeline @ inference...
-            class_embedding.dtype = torch.float32
+            class_embedding = CustomEmbedding(nb_classes, args.class_embedding_dim)
         case _:
             raise ValueError(
                 f"Unrecognized class embedding type: {args.class_embedding_type}"
@@ -148,6 +148,8 @@ def main(args):
         prediction_type=args.prediction_type,
     )
 
+    # ---------------------- Miscellaneous ---------------------
+
     # Create EMA for the unet model
     if args.use_ema:
         ema_unet = EMAModel(
@@ -169,6 +171,24 @@ def main(args):
     # track gradients
     if accelerator.is_main_process:
         wandb.watch(denoiser_model)
+
+    # ------------------ Save Custom Pipeline ------------------
+    if accelerator.is_main_process:
+        save_pipeline(
+            accelerator=accelerator,
+            denoiser_model=denoiser_model,
+            class_embedding=class_embedding,
+            args=args,
+            ema_model=ema_unet,
+            noise_scheduler=noise_scheduler,
+            full_pipeline_save_folder=full_pipeline_save_folder,
+            repo=repo,
+            epoch=0,
+            logger=logger,
+            first_save=True,
+            autoencoder_model=autoencoder_model,
+        )
+    accelerator.wait_for_everyone()
 
     # ------------------------ Optimizer -----------------------
     optimizer = torch.optim.AdamW(
@@ -240,7 +260,6 @@ def main(args):
 
     (
         num_update_steps_per_epoch,
-        tot_nb_eval_batches,
         actual_eval_batch_sizes_for_this_process,
     ) = get_training_setup(args, accelerator, train_dataloader, logger, dataset)
 
@@ -286,7 +305,7 @@ def main(args):
                 actual_eval_batch_sizes_for_this_process=actual_eval_batch_sizes_for_this_process,
                 epoch=epoch,
                 global_step=global_step,
-                initial_pipeline_save_path=initial_pipeline_save_path,
+                full_pipeline_save_path=full_pipeline_save_folder,
                 nb_classes=nb_classes,
                 logger=logger,
                 dataset=dataset,
@@ -298,20 +317,19 @@ def main(args):
             and epoch != 0
         ):
             save_pipeline(
-                accelerator,
-                denoiser_model,
-                class_embedding,
-                args,
-                ema_unet,
-                noise_scheduler,
-                initial_pipeline_save_path,
-                full_pipeline_save_folder,
-                repo,
-                epoch,
+                accelerator=accelerator,
+                denoiser_model=denoiser_model,
+                class_embedding=class_embedding,
+                args=args,
+                ema_model=ema_unet,
+                noise_scheduler=noise_scheduler,
+                full_pipeline_save_folder=full_pipeline_save_folder,
+                repo=repo,
+                epoch=epoch,
+                logger=logger,
             )
 
-        # do not start new epoch before generation & checkpointing is done
-        # (note that checkpointing may start a BG process?)
+        # do not start new epoch before generation & pipeline saving is done
         accelerator.wait_for_everyone()
 
     accelerator.end_training()

@@ -9,13 +9,14 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch_fidelity
+from accelerate.logging import MultiProcessAdapter
 from diffusers import AutoencoderKL, UNet2DConditionModel
 from diffusers.training_utils import EMAModel
 from PIL.Image import Image
 from tqdm.auto import tqdm
 
 import wandb
-from src.custom_pipeline_stable_diffusion_img2img import (
+from src.custom_pipeline_stable_diffusion_img2img.custom_pipeline_stable_diffusion_img2img import (
     CustomStableDiffusionImg2ImgPipeline,
 )
 
@@ -23,7 +24,11 @@ from .utils_misc import extract_into_tensor, split
 
 
 def resume_from_checkpoint(
-    args, logger, accelerator, num_update_steps_per_epoch, global_step
+    args,
+    logger: MultiProcessAdapter,
+    accelerator,
+    num_update_steps_per_epoch: int,
+    global_step: int,
 ):
     if args.resume_from_checkpoint != "latest":
         path = os.path.basename(args.resume_from_checkpoint)
@@ -60,7 +65,9 @@ def resume_from_checkpoint(
     return first_epoch, resume_step, global_step
 
 
-def get_training_setup(args, accelerator, train_dataloader, logger, dataset):
+def get_training_setup(
+    args, accelerator, train_dataloader, logger: MultiProcessAdapter, dataset
+):
     """
     Returns
     -------
@@ -105,7 +112,6 @@ def get_training_setup(args, accelerator, train_dataloader, logger, dataset):
 
     return (
         num_update_steps_per_epoch,
-        tot_nb_eval_batches,
         actual_eval_batch_sizes_for_this_process,
     )
 
@@ -113,19 +119,19 @@ def get_training_setup(args, accelerator, train_dataloader, logger, dataset):
 def perform_training_epoch(
     denoiser_model: UNet2DConditionModel,
     autoencoder_model: AutoencoderKL,
-    num_update_steps_per_epoch,
+    num_update_steps_per_epoch: int,
     accelerator,
-    epoch,
+    epoch: int,
     train_dataloader,
     args,
-    first_epoch,
-    resume_step,
+    first_epoch: int,
+    resume_step: int,
     noise_scheduler,
-    global_step,
+    global_step: int,
     optimizer,
     lr_scheduler,
     ema_model: None | EMAModel,
-    logger,
+    logger: MultiProcessAdapter,
     class_embedding: Callable | torch.nn.Embedding,
     do_uncond_pass_across_all_procs: torch.BoolTensor,
 ):
@@ -194,6 +200,7 @@ def perform_training_epoch(
                 lr_scheduler=lr_scheduler,
                 class_embedding=class_embedding,
                 do_unconditional_pass=do_unconditional_pass,
+                logger=logger,
             )
 
         # Checks if the accelerator has performed an optimization step behind the scenes
@@ -220,12 +227,14 @@ def perform_training_epoch(
         progress_bar.set_postfix(**logs)
         accelerator.log(logs, step=global_step)
         if math.isnan(loss_value) and accelerator.is_main_process:
+            msg = f"Loss is NaN at step {global_step} / epoch {epoch}"
             wandb.alert(
                 title="NaN loss",
-                text=f"Loss is NaN at step {global_step} / epoch {epoch}",
+                text=msg,
                 level=wandb.AlertLevel.ERROR,
                 wait_duration=21600,  # 6 hours
             )
+            logger.error(msg)
     progress_bar.close()
 
     # wait for everybody at each end of training epoch
@@ -249,6 +258,7 @@ def _forward_backward_pass(
     lr_scheduler,
     class_embedding: Callable | torch.nn.Embedding,
     do_unconditional_pass: bool,
+    logger: MultiProcessAdapter,
 ):
     # classifier-free guidance: randomly discard conditioning to train unconditionally
     accelerator.log(
@@ -310,12 +320,14 @@ def _forward_backward_pass(
         gard_norm = accelerator.clip_grad_norm_(params_to_clip, 1.0)
         accelerator.log({"gradient norm": gard_norm}, step=global_step)
         if gard_norm.isnan().any() and accelerator.is_main_process:
+            msg = f"Gradient norm is NaN at step {global_step}"
             wandb.alert(
                 title="NaN gradient norm",
-                text=f"The norm of the gradient is NaN at step {global_step}",
+                text=msg,
                 level=wandb.AlertLevel.ERROR,
                 wait_duration=21600,  # 6 hours
             )
+            logger.error(msg)
     optimizer.step()
     lr_scheduler.step()
     optimizer.zero_grad()
@@ -369,9 +381,9 @@ def generate_samples_and_compute_metrics(
     actual_eval_batch_sizes_for_this_process,
     epoch,
     global_step,
-    initial_pipeline_save_path,
+    full_pipeline_save_path,
     nb_classes: int,
-    logger,
+    logger: MultiProcessAdapter,
     dataset,
 ):
     progress_bar = tqdm(
@@ -388,13 +400,13 @@ def generate_samples_and_compute_metrics(
 
     # load the previously downloaded pipeline
     pipeline = CustomStableDiffusionImg2ImgPipeline.from_pretrained(
-        initial_pipeline_save_path,
+        full_pipeline_save_path,
         local_files_only=True,  # do not pull from hub during training
         # then override modified components:
         # vae=autoencoder_model,
         unet=unet,
         scheduler=noise_scheduler,
-        class_embeddings=class_embedding,
+        class_embedding=class_embedding,
     ).to(accelerator.device)
     pipeline.set_progress_bar_config(disable=True)
 
@@ -427,11 +439,12 @@ def generate_samples_and_compute_metrics(
                 class_labels=torch.tensor(
                     [class_label] * actual_bs, device=accelerator.device
                 ).long(),
-                strength=0,  # no need to re-noise pure noise
+                strength=1,  # no noise will actually be added if image=None
                 num_inference_steps=args.num_inference_steps,
                 guidance_scale=args.guidance_factor,
                 generator=generator,
                 output_type="np",
+                device=accelerator.device,
             )
 
             # save images to disk
@@ -502,75 +515,57 @@ def generate_samples_and_compute_metrics(
         # resync everybody for each class
         accelerator.wait_for_everyone()
 
-    # finally compute metrics for the whole dataset (if not already done)
-    # TODO: ***fix per-class tmp gen folder re-written at each class...***
-    # if nb_classes > 1:
-    #     if accelerator.is_main_process:
-    #         # clean image_generation_tmp_save_folder
-    #         if os.path.exists(image_generation_tmp_save_folder):
-    #             rmtree(image_generation_tmp_save_folder)
-    #         os.makedirs(image_generation_tmp_save_folder, exist_ok=False)
-    #         accelerator.wait_for_everyone()
-    #         # compute metrics
-    #         logger.info(f"Computing metrics for whole dataset...")
-    #         metrics_dict = torch_fidelity.calculate_metrics(
-    #             input1=args.train_data_dir + "/train",
-    #             input2=image_generation_tmp_save_folder.as_posix(),
-    #             cuda=True,
-    #             batch_size=args.eval_batch_size,
-    #             isc=args.compute_isc,
-    #             fid=args.compute_fid,
-    #             kid=args.compute_kid,
-    #             verbose=False,
-    #             samples_find_deep=True,
-    #             cache_root=".fidelity_cache",
-    #             input1_cache_name="whole_dataset",  # forces caching
-    #             rng_seed=42,
-    #             kid_subset_size=args.kid_subset_size,
-    #         )
-    #         for metric_name, metric_value in metrics_dict.items():
-    #             accelerator.log(
-    #                 {
-    #                     f"{metric_name}/whole_dataset": metric_value,
-    #                 },
-    #                 step=global_step,
-    #             )
-    #         # clear the tmp folder
-    #         rmtree(image_generation_tmp_save_folder)
-
     if args.use_ema:
         ema_model.restore(unet.parameters())
 
 
-@torch.no_grad()
 def save_pipeline(
     accelerator,
     denoiser_model: UNet2DConditionModel,
-    class_embedding,
+    class_embedding: torch.nn.Embedding,
     args,
     ema_model,
     noise_scheduler,
-    initial_pipeline_save_path,
     full_pipeline_save_folder,
     repo,
     epoch,
+    logger: MultiProcessAdapter,
+    first_save: bool | None = None,
+    autoencoder_model: AutoencoderKL | None = None,
 ):
     denoiser_model = accelerator.unwrap_model(denoiser_model)
+    class_embedding = accelerator.unwrap_model(class_embedding)
 
     if args.use_ema:
         ema_model.store(denoiser_model.parameters())
         ema_model.copy_to(denoiser_model.parameters())
 
-    # load the previously downloaded pipeline
-    pipeline = CustomStableDiffusionImg2ImgPipeline.from_pretrained(
-        initial_pipeline_save_path,
-        unet=denoiser_model,
-        noise_schedule=noise_scheduler,
-        class_embeddings=class_embedding,
-        local_files_only=True,  # do not pull from hub during training
-    )
+    if not first_save:
+        # load the previously saved pipeline during training
+        # (the vae is frozen)
+        pipeline = CustomStableDiffusionImg2ImgPipeline.from_pretrained(
+            full_pipeline_save_folder,
+            unet=denoiser_model,
+            noise_schedule=noise_scheduler,
+            class_embedding=class_embedding,
+            local_files_only=True,  # do not pull from hub during training
+        )
+    else:
+        assert (
+            autoencoder_model is not None
+        ), "Need to pass autoencoder_model for first save"
+        # create the first save of the pipeline
+        pipeline = CustomStableDiffusionImg2ImgPipeline(
+            vae=autoencoder_model,
+            unet=denoiser_model,
+            scheduler=noise_scheduler,
+            class_embedding=class_embedding,
+        )
 
     # save to full_pipeline_save_folder (≠ initial_pipeline_save_path...)
+    logger.info(
+        f" === Saving full pipeline to {full_pipeline_save_folder} at epoch {epoch} ==="
+    )
     pipeline.save_pretrained(full_pipeline_save_folder)
 
     if args.use_ema:

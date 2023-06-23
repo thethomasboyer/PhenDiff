@@ -8,9 +8,8 @@ from typing import Optional
 import datasets
 import diffusers
 import torch
-from diffusers.training_utils import EMAModel
 from diffusers.utils.import_utils import is_xformers_available
-from huggingface_hub import HfFolder, Repository, create_repo, whoami
+from huggingface_hub import HfFolder, whoami
 from packaging import version
 
 
