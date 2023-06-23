@@ -277,9 +277,11 @@ def _forward_backward_pass(
         ).to(accelerator.device)
     else:
         class_emb = class_embedding(class_labels)
-        # TODO: hardcoded dumb repeat, fix this
+        # TODO: hardcoded dumb cast, fix this
         (bs, ed) = class_emb.shape
-        class_emb = class_emb.reshape(bs, 1, ed).repeat(1, 77, 1)
+        class_emb = class_emb.reshape(bs, 1, ed)
+        padding = torch.zeros_like(class_emb).repeat(1, 76, 1).to(class_emb.device)
+        class_emb = torch.cat([class_emb, padding], dim=1)
 
     # use the class embedding as the "encoder hidden state"
     encoder_hidden_states = class_emb
@@ -563,9 +565,7 @@ def save_pipeline(
         )
 
     # save to full_pipeline_save_folder (≠ initial_pipeline_save_path...)
-    logger.info(
-        f" === Saving full pipeline to {full_pipeline_save_folder} at epoch {epoch} ==="
-    )
+    logger.info(f"Saving full pipeline to {full_pipeline_save_folder} at epoch {epoch}")
     pipeline.save_pretrained(full_pipeline_save_folder)
 
     if args.use_ema:

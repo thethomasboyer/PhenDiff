@@ -235,7 +235,7 @@ class CustomStableDiffusionImg2ImgPipeline(
         do_classifier_free_guidance,
         class_labels_embeds: Optional[torch.FloatTensor] = None,
         lora_scale: Optional[float] = None,
-    ):
+    ) -> torch.FloatTensor:
         r"""
         Encodes the class label into an embedding space.
 
@@ -572,7 +572,13 @@ class CustomStableDiffusionImg2ImgPipeline(
 
         # hack to match the expected encoder_hidden_states shape
         (bs, ed) = class_labels_embeds.shape
-        class_labels_embeds = class_labels_embeds.reshape(bs, 1, ed).repeat(1, 77, 1)
+        class_labels_embeds = class_labels_embeds.reshape(bs, 1, ed)
+        padding = (
+            torch.zeros_like(class_labels_embeds)
+            .repeat(1, 76, 1)
+            .to(class_labels_embeds.device)
+        )
+        class_labels_embeds = torch.cat([class_labels_embeds, padding], dim=1)
 
         # 4. Preprocess image
         if image is not None:
