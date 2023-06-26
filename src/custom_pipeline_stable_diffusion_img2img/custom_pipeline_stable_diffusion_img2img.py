@@ -38,6 +38,8 @@ from diffusers.utils import (
 )
 from packaging import version
 
+from src.custom_embedding import CustomEmbedding
+
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 
@@ -65,7 +67,7 @@ class CustomStableDiffusionImg2ImgPipeline(
         scheduler ([`SchedulerMixin`]):
             A scheduler to be used in combination with `unet` to denoise the encoded image latents. Can be one of
             [`DDIMScheduler`], [`LMSDiscreteScheduler`], or [`PNDMScheduler`].
-        class_embedding (`torch.nn.Embedding`):
+        class_embedding (`CustomEmbedding`):
             The frozen embedding layer to use for the class conditioning.
     """
 
@@ -74,7 +76,7 @@ class CustomStableDiffusionImg2ImgPipeline(
         vae: AutoencoderKL,
         unet: UNet2DConditionModel,
         scheduler: KarrasDiffusionSchedulers,
-        class_embedding: torch.nn.Embedding,
+        class_embedding: CustomEmbedding,
     ):
         super().__init__()
 
