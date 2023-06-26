@@ -16,6 +16,7 @@ from PIL.Image import Image
 from tqdm.auto import tqdm
 
 import wandb
+from src.custom_embedding import CustomEmbedding
 from src.custom_pipeline_stable_diffusion_img2img.custom_pipeline_stable_diffusion_img2img import (
     CustomStableDiffusionImg2ImgPipeline,
 )
@@ -132,7 +133,7 @@ def perform_training_epoch(
     lr_scheduler,
     ema_model: None | EMAModel,
     logger: MultiProcessAdapter,
-    class_embedding: Callable | torch.nn.Embedding,
+    class_embedding: CustomEmbedding,
     do_uncond_pass_across_all_procs: torch.BoolTensor,
 ):
     # set model to train mode
@@ -256,7 +257,7 @@ def _forward_backward_pass(
     clean_images,
     optimizer,
     lr_scheduler,
-    class_embedding: Callable | torch.nn.Embedding,
+    class_embedding: CustomEmbedding,
     do_unconditional_pass: bool,
     logger: MultiProcessAdapter,
 ):
@@ -277,9 +278,11 @@ def _forward_backward_pass(
         ).to(accelerator.device)
     else:
         class_emb = class_embedding(class_labels)
-        # TODO: hardcoded dumb repeat, fix this
+        # TODO: hardcoded dumb cast, fix this
         (bs, ed) = class_emb.shape
-        class_emb = class_emb.reshape(bs, 1, ed).repeat(1, 77, 1)
+        class_emb = class_emb.reshape(bs, 1, ed)
+        padding = torch.zeros_like(class_emb).repeat(1, 76, 1).to(class_emb.device)
+        class_emb = torch.cat([class_emb, padding], dim=1)
 
     # use the class embedding as the "encoder hidden state"
     encoder_hidden_states = class_emb
@@ -374,7 +377,7 @@ def generate_samples_and_compute_metrics(
     args,
     accelerator,
     denoiser_model: UNet2DConditionModel,
-    class_embedding: Callable | torch.nn.Embedding,
+    class_embedding: CustomEmbedding,
     ema_model,
     noise_scheduler,
     image_generation_tmp_save_folder,
@@ -522,17 +525,25 @@ def generate_samples_and_compute_metrics(
 def save_pipeline(
     accelerator,
     denoiser_model: UNet2DConditionModel,
-    class_embedding: torch.nn.Embedding,
+    class_embedding: CustomEmbedding,
     args,
     ema_model,
     noise_scheduler,
-    full_pipeline_save_folder,
+    full_pipeline_save_folder: Path,
     repo,
     epoch,
     logger: MultiProcessAdapter,
     first_save: bool | None = None,
     autoencoder_model: AutoencoderKL | None = None,
 ):
+    if (
+        first_save
+        and full_pipeline_save_folder.exists()
+        and len(list(full_pipeline_save_folder.iterdir())) != 0
+    ):
+        logger.warn("Not overwriting already populated pipeline save folder at run start")
+        return
+
     denoiser_model = accelerator.unwrap_model(denoiser_model)
     class_embedding = accelerator.unwrap_model(class_embedding)
 
@@ -563,9 +574,7 @@ def save_pipeline(
         )
 
     # save to full_pipeline_save_folder (≠ initial_pipeline_save_path...)
-    logger.info(
-        f" === Saving full pipeline to {full_pipeline_save_folder} at epoch {epoch} ==="
-    )
+    logger.info(f"Saving full pipeline to {full_pipeline_save_folder} at epoch {epoch}")
     pipeline.save_pretrained(full_pipeline_save_folder)
 
     if args.use_ema:

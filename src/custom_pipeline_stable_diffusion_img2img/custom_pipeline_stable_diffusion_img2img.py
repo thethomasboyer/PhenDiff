@@ -38,6 +38,8 @@ from diffusers.utils import (
 )
 from packaging import version
 
+from src.custom_embedding import CustomEmbedding
+
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 
@@ -65,7 +67,7 @@ class CustomStableDiffusionImg2ImgPipeline(
         scheduler ([`SchedulerMixin`]):
             A scheduler to be used in combination with `unet` to denoise the encoded image latents. Can be one of
             [`DDIMScheduler`], [`LMSDiscreteScheduler`], or [`PNDMScheduler`].
-        class_embedding (`torch.nn.Embedding`):
+        class_embedding (`CustomEmbedding`):
             The frozen embedding layer to use for the class conditioning.
     """
 
@@ -74,7 +76,7 @@ class CustomStableDiffusionImg2ImgPipeline(
         vae: AutoencoderKL,
         unet: UNet2DConditionModel,
         scheduler: KarrasDiffusionSchedulers,
-        class_embedding: torch.nn.Embedding,
+        class_embedding: CustomEmbedding,
     ):
         super().__init__()
 
@@ -235,7 +237,7 @@ class CustomStableDiffusionImg2ImgPipeline(
         do_classifier_free_guidance,
         class_labels_embeds: Optional[torch.FloatTensor] = None,
         lora_scale: Optional[float] = None,
-    ):
+    ) -> torch.FloatTensor:
         r"""
         Encodes the class label into an embedding space.
 
@@ -572,7 +574,13 @@ class CustomStableDiffusionImg2ImgPipeline(
 
         # hack to match the expected encoder_hidden_states shape
         (bs, ed) = class_labels_embeds.shape
-        class_labels_embeds = class_labels_embeds.reshape(bs, 1, ed).repeat(1, 77, 1)
+        class_labels_embeds = class_labels_embeds.reshape(bs, 1, ed)
+        padding = (
+            torch.zeros_like(class_labels_embeds)
+            .repeat(1, 76, 1)
+            .to(class_labels_embeds.device)
+        )
+        class_labels_embeds = torch.cat([class_labels_embeds, padding], dim=1)
 
         # 4. Preprocess image
         if image is not None:
