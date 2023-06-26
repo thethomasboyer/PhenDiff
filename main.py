@@ -1,21 +1,22 @@
 import os
+from pathlib import Path
 
-import numpy as np
 import torch
-import wandb
 from accelerate import Accelerator
-from accelerate.logging import get_logger
-from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration
+from accelerate.logging import MultiProcessAdapter, get_logger
+from accelerate.utils import ProjectConfiguration
 from diffusers import (
     AutoencoderKL,
     DDIMScheduler,
+    StableDiffusionImg2ImgPipeline,
     UNet2DConditionModel,
 )
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import EMAModel
-from transformers import CLIPTextModel, CLIPTokenizer
 
+import wandb
 from src.args_parser import parse_args
+from src.custom_embedding import CustomEmbedding
 from src.utils_dataset import setup_dataset
 from src.utils_misc import (
     args_checker,
@@ -24,19 +25,19 @@ from src.utils_misc import (
     setup_xformers_memory_efficient_attention,
 )
 from src.utils_training import (
-    checkpoint_model,
     generate_samples_and_compute_metrics,
     get_training_setup,
     perform_training_epoch,
     resume_from_checkpoint,
+    save_pipeline,
 )
 
-logger = get_logger(__name__, log_level="INFO")
+logger: MultiProcessAdapter = get_logger(__name__, log_level="INFO")
 
 
 def main(args):
     # ------------------------- Checks -------------------------
-    args_checker(args)
+    args_checker(args, logger)
 
     # ----------------------- Accelerator ----------------------
     accelerator_project_config = ProjectConfiguration(
@@ -45,14 +46,11 @@ def main(args):
         project_dir=args.output_dir,
     )
 
-    kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
-
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
         log_with=args.logger,
         project_config=accelerator_project_config,
-        kwargs_handlers=[kwargs],
     )
 
     # -------------------------- WandB -------------------------
@@ -66,9 +64,10 @@ def main(args):
     # Make one log on every process with the configuration for debugging.
     setup_logger(logger, accelerator)
 
-    # ------------------- Repository scruture ------------------
+    # ------------------ Repository Structure ------------------
     (
         image_generation_tmp_save_folder,
+        initial_pipeline_save_folder,
         full_pipeline_save_folder,
         repo,
     ) = create_repo_structure(args, accelerator)
@@ -84,33 +83,63 @@ def main(args):
     )
 
     # ------------------- Pretrained Pipeline ------------------
-    autoencoder_model: AutoencoderKL = AutoencoderKL.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision
-    )
-    denoiser_model: UNet2DConditionModel = UNet2DConditionModel.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision
-    )
-    text_encoder: CLIPTextModel = CLIPTextModel.from_pretrained(
+    # Download the full pretrained pipeline.
+    # Note that the actual folder to pull components from is
+    # initial_pipeline_save_folder/snapshots/<gibberish>/ (probably a hash?)
+    # hence the need to get the *true* save folder (initial_pipeline_save_path)
+    initial_pipeline_save_path = StableDiffusionImg2ImgPipeline.download(
         args.pretrained_model_name_or_path,
-        subfolder="text_encoder",
-        revision=args.revision,
-    )
-    tokenizer: CLIPTokenizer = CLIPTokenizer.from_pretrained(
-        args.pretrained_model_name_or_path,
-        subfolder="tokenizer",
-        revision=args.revision,
+        cache_dir=initial_pipeline_save_folder,
     )
 
-    # Move components to device and cast frozen ones to float16
+    # Load the pretrained components
+    autoencoder_model: AutoencoderKL = AutoencoderKL.from_pretrained(
+        initial_pipeline_save_path,
+        subfolder="vae",
+        local_files_only=True,
+    )
+    if args.learn_denoiser_from_scratch:
+        denoiser_model_config = UNet2DConditionModel.load_config(
+            Path(initial_pipeline_save_path, "unet", "config.json"),
+        )
+        denoiser_model: UNet2DConditionModel = UNet2DConditionModel.from_config(
+            denoiser_model_config,
+        )
+    else:
+        denoiser_model: UNet2DConditionModel = UNet2DConditionModel.from_pretrained(
+            initial_pipeline_save_path,
+            subfolder="unet",
+            local_files_only=True,
+        )
+
+    # ----------------- Custom Class Embeddings ----------------
+    # create a custom class inheriting from diffusers.ModelMixin
+    # in order to use Hugging Face's routines
+    match args.class_embedding_type:
+        case "one_hot":
+            raise NotImplementedError(
+                "Dimensions will mismatch with one-hot encoding; TODO: fix"
+            )
+            # class_embedding = torch.nn.functional.one_hot(torch.arange(nb_classes))
+            # ..?
+            # class_embedding.to(accelerator.device)
+        case "embedding":
+            class_embedding = CustomEmbedding(nb_classes, args.class_embedding_dim)
+        case _:
+            raise ValueError(
+                f"Unrecognized class embedding type: {args.class_embedding_type}"
+            )
+
+    # ---------------- Move & Freeze Components ----------------
+    # Move components to device
     autoencoder_model.to(accelerator.device)
     denoiser_model.to(accelerator.device)
-    text_encoder.to(accelerator.device)
+    class_embedding.to(accelerator.device)
 
-    # Freeze components
+    # ❄️ >>> Freeze components <<< ❄️
     autoencoder_model.requires_grad_(False)
-    text_encoder.requires_grad_(False)
 
-    # --------------------- Noise scheduler --------------------
+    # --------------------- Noise Scheduler --------------------
     noise_scheduler = DDIMScheduler(
         num_train_timesteps=args.num_training_steps,
         beta_start=args.beta_start,
@@ -118,6 +147,8 @@ def main(args):
         beta_schedule=args.beta_schedule,
         prediction_type=args.prediction_type,
     )
+
+    # ---------------------- Miscellaneous ---------------------
 
     # Create EMA for the unet model
     if args.use_ema:
@@ -135,21 +166,40 @@ def main(args):
 
     if args.enable_xformers_memory_efficient_attention:
         setup_xformers_memory_efficient_attention(denoiser_model, logger)
+        setup_xformers_memory_efficient_attention(autoencoder_model, logger)
 
     # track gradients
     if accelerator.is_main_process:
         wandb.watch(denoiser_model)
 
+    # ------------------ Save Custom Pipeline ------------------
+    if accelerator.is_main_process:
+        save_pipeline(
+            accelerator=accelerator,
+            denoiser_model=denoiser_model,
+            class_embedding=class_embedding,
+            args=args,
+            ema_model=ema_unet,
+            noise_scheduler=noise_scheduler,
+            full_pipeline_save_folder=full_pipeline_save_folder,
+            repo=repo,
+            epoch=0,
+            logger=logger,
+            first_save=True,
+            autoencoder_model=autoencoder_model,
+        )
+    accelerator.wait_for_everyone()
+
     # ------------------------ Optimizer -----------------------
     optimizer = torch.optim.AdamW(
-        denoiser_model.parameters(),
+        list(denoiser_model.parameters()) + list(class_embedding.parameters()),
         lr=args.learning_rate,
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.adam_weight_decay,
         eps=args.adam_epsilon,
     )
 
-    # ----------------- Learning rate scheduler -----------------
+    # ----------------- Learning Rate Scheduler -----------------
     lr_scheduler = get_scheduler(
         args.lr_scheduler,
         optimizer=optimizer,
@@ -157,12 +207,44 @@ def main(args):
         num_training_steps=(len(train_dataloader) * args.num_epochs),
     )
 
-    # ------------------ Distributed compute  ------------------
-    denoiser_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        denoiser_model, optimizer, train_dataloader, lr_scheduler
+    # ------------------ Distributed Compute  ------------------
+    # get the total len of the dataloader before distributing it
+    total_dataloader_len = len(train_dataloader)
+
+    # prepare distributed training with 🤗's magic
+    (
+        denoiser_model,
+        optimizer,
+        train_dataloader,
+        lr_scheduler,
+        class_embedding,
+        autoencoder_model,
+    ) = accelerator.prepare(
+        denoiser_model,
+        optimizer,
+        train_dataloader,
+        lr_scheduler,
+        class_embedding,
+        autoencoder_model,
     )
 
-    # --------------------- Training setup ---------------------
+    # synchronize the conditional & unconditional passes of CLF guidance training between the GPUs
+    # to circumvent a nasty and unexplained bug...
+    do_uncond_pass_across_all_procs: torch.BoolTensor = torch.zeros(
+        (total_dataloader_len,), device=accelerator.device, dtype=torch.bool
+    )
+    if accelerator.is_main_process:
+        # fill tensor on main proc
+        for batch_idx in range(total_dataloader_len):
+            do_uncond_pass_across_all_procs[batch_idx] = (
+                torch.rand(1) < args.proba_uncond
+            )
+        # broadcast tensor to all procs
+        main_proc_rank = torch.distributed.get_rank()
+        assert main_proc_rank == 0, f"Main proc rank is not 0 but {main_proc_rank}"
+    torch.distributed.broadcast(do_uncond_pass_across_all_procs, 0)
+
+    # --------------------- Training Setup ---------------------
     if args.use_ema:
         ema_unet.to(accelerator.device)
 
@@ -178,81 +260,76 @@ def main(args):
 
     (
         num_update_steps_per_epoch,
-        tot_nb_eval_batches,
         actual_eval_batch_sizes_for_this_process,
     ) = get_training_setup(args, accelerator, train_dataloader, logger, dataset)
 
-    # ----------------- Resume from checkpoint -----------------
+    # ----------------- Resume from Checkpoint -----------------
     if args.resume_from_checkpoint:
         first_epoch, resume_step, global_step = resume_from_checkpoint(
             args, logger, accelerator, num_update_steps_per_epoch, global_step
         )
 
-    # ---------------------- Seeds & RNGs ----------------------
-    rng = np.random.default_rng()  # TODO: seed this
-
     # ---------------------- Training loop ---------------------
     for epoch in range(first_epoch, args.num_epochs):
         # Training epoch
         global_step = perform_training_epoch(
-            denoiser_model,
-            autoencoder_model,
-            tokenizer,
-            text_encoder,
-            num_update_steps_per_epoch,
-            accelerator,
-            epoch,
-            train_dataloader,
-            args,
-            first_epoch,
-            resume_step,
-            noise_scheduler,
-            global_step,
-            optimizer,
-            lr_scheduler,
-            ema_unet,
-            logger,
+            denoiser_model=denoiser_model,
+            autoencoder_model=autoencoder_model,
+            num_update_steps_per_epoch=num_update_steps_per_epoch,
+            accelerator=accelerator,
+            epoch=epoch,
+            train_dataloader=train_dataloader,
+            args=args,
+            first_epoch=first_epoch,
+            resume_step=resume_step,
+            noise_scheduler=noise_scheduler,
+            global_step=global_step,
+            optimizer=optimizer,
+            lr_scheduler=lr_scheduler,
+            ema_model=ema_unet,
+            logger=logger,
+            class_embedding=class_embedding,
+            do_uncond_pass_across_all_procs=do_uncond_pass_across_all_procs,
         )
 
         # Generate sample images for visual inspection & metrics computation
-        if (
-            epoch % args.save_images_epochs == 0 or epoch == args.num_epochs - 1
-        ) and epoch > 0:
+        if epoch % args.generate_images_epochs == 0:
             generate_samples_and_compute_metrics(
-                args,
-                accelerator,
-                denoiser_model,
-                ema_unet,
-                autoencoder_model,
-                text_encoder,
-                tokenizer,
-                noise_scheduler,
-                image_generation_tmp_save_folder,
-                actual_eval_batch_sizes_for_this_process,
-                epoch,
-                global_step,
+                args=args,
+                accelerator=accelerator,
+                denoiser_model=denoiser_model,
+                class_embedding=class_embedding,
+                ema_model=ema_unet,
+                noise_scheduler=noise_scheduler,
+                image_generation_tmp_save_folder=image_generation_tmp_save_folder,
+                actual_eval_batch_sizes_for_this_process=actual_eval_batch_sizes_for_this_process,
+                epoch=epoch,
+                global_step=global_step,
+                full_pipeline_save_path=full_pipeline_save_folder,
+                nb_classes=nb_classes,
+                logger=logger,
+                dataset=dataset,
             )
 
         if (
             accelerator.is_main_process
-            and (epoch % args.save_model_epochs == 0 or epoch == args.num_epochs - 1)
+            and epoch % args.save_model_epochs == 0
             and epoch != 0
         ):
-            checkpoint_model(
-                accelerator,
-                denoiser_model,
-                autoencoder_model,
-                text_encoder,
-                tokenizer,
-                args,
-                ema_unet,
-                noise_scheduler,
-                full_pipeline_save_folder,
-                repo,
-                epoch,
+            save_pipeline(
+                accelerator=accelerator,
+                denoiser_model=denoiser_model,
+                class_embedding=class_embedding,
+                args=args,
+                ema_model=ema_unet,
+                noise_scheduler=noise_scheduler,
+                full_pipeline_save_folder=full_pipeline_save_folder,
+                repo=repo,
+                epoch=epoch,
+                logger=logger,
             )
 
-        # do not start new epoch before generation & checkpointing is done
+        # do not start new epoch before generation & pipeline saving is done
         accelerator.wait_for_everyone()
 
     accelerator.end_training()
