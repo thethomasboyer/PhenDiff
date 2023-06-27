@@ -1,9 +1,22 @@
-# Utilities.
+# Copyright 2023 The HuggingFace Team and Thomas Boyer. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 import logging
 import os
 from pathlib import Path
 from typing import Optional
+from warnings import warn
 
 import datasets
 import diffusers
@@ -73,6 +86,11 @@ def args_checker(args, logger):
     if args.compute_kid and (args.nb_generated_images < args.kid_subset_size):
         raise ValueError(
             f"'nb_generated_images' (={args.nb_generated_images}) must be >= 'kid_subset_size' (={args.kid_subset_size})"
+        )
+
+    if args.gradient_accumulation_steps > 1:
+        warn(
+            "Gradient accumulation may (probably) fail as the class embedding is not wrapped inside `accelerate.accumulate` context manager; TODO!"
         )
 
 

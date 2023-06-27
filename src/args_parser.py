@@ -1,9 +1,31 @@
+# Copyright 2023 The HuggingFace Team and Thomas Boyer. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import argparse
 import os
 
 
 def parse_args():
+    # define parser
     parser = argparse.ArgumentParser(description="The main training script.")
+    # define args
+    parser.add_argument(
+        "--debug",
+        default=False,
+        action="store_true",
+        help="Run the training script in debug mode, ie with: save_model_epochs=1, generate_images_epochs=1, nb_generated_images=eval_batch_size, num_training_steps=10, num_inference_steps=5, checkpoints_total_limit=1, checkpointing_steps=30, kid_subset_size=min(1000, nb_generated_images)",
+    )
     parser.add_argument(
         "--dataset_name",
         type=str,
@@ -339,10 +361,20 @@ def parse_args():
         action="store_true",
         help="Whether or not to use xformers.",
     )
-
+    # parse args
     args = parser.parse_args()
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
     if env_local_rank != -1 and env_local_rank != args.local_rank:
         args.local_rank = env_local_rank
 
+    if args.debug:
+        print("\n=====> DEBUG FLAG: MODIFYING PASSED ARGS <=====\n")
+        args.save_model_epochs = 1
+        args.generate_images_epochs = 1
+        args.nb_generated_images = args.eval_batch_size
+        args.num_training_steps = 10
+        args.num_inference_steps = 5
+        args.checkpoints_total_limit = 1
+        args.checkpointing_steps = 30
+        args.kid_subset_size = min(1000, args.nb_generated_images)
     return args
