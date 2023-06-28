@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+from argparse import Namespace
 from pathlib import Path
 
 import torch
@@ -49,10 +50,7 @@ from src.utils_training import (
 logger: MultiProcessAdapter = get_logger(__name__, log_level="INFO")
 
 
-def main(args):
-    # ------------------------- Checks -------------------------
-    args_checker(args, logger)
-
+def main(args: Namespace):
     # ----------------------- Accelerator ----------------------
     accelerator_project_config = ProjectConfiguration(
         total_limit=args.checkpoints_total_limit,
@@ -84,7 +82,7 @@ def main(args):
         initial_pipeline_save_folder,
         full_pipeline_save_folder,
         repo,
-    ) = create_repo_structure(args, accelerator)
+    ) = create_repo_structure(args, accelerator, logger)
 
     # ------------------------- Dataset ------------------------
     dataset, nb_classes = setup_dataset(args, logger)
@@ -95,6 +93,10 @@ def main(args):
         shuffle=True,
         num_workers=args.dataloader_num_workers,
     )
+
+    # ------------------------- Checks -------------------------
+    if accelerator.is_main_process:
+        args_checker(args, logger, len(train_dataloader))
 
     # ------------------- Pretrained Pipeline ------------------
     # Download the full pretrained pipeline.
@@ -151,7 +153,12 @@ def main(args):
     class_embedding.to(accelerator.device)
 
     # ❄️ >>> Freeze components <<< ❄️
-    autoencoder_model.requires_grad_(False)
+    if not "autoencoder" in args.components_to_train:
+        autoencoder_model.requires_grad_(False)
+    if not "denoiser" in args.components_to_train:
+        denoiser_model.requires_grad_(False)
+    if not "class_embedding" in args.components_to_train:
+        class_embedding.requires_grad_(False)
 
     # --------------------- Noise Scheduler --------------------
     noise_scheduler = DDIMScheduler(
@@ -350,5 +357,5 @@ def main(args):
 
 
 if __name__ == "__main__":
-    args = parse_args()
+    args: Namespace = parse_args()
     main(args)

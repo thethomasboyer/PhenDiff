@@ -14,6 +14,8 @@
 
 import logging
 import os
+from argparse import Namespace
+from math import ceil
 from pathlib import Path
 from typing import Optional
 from warnings import warn
@@ -21,6 +23,7 @@ from warnings import warn
 import datasets
 import diffusers
 import torch
+from accelerate.logging import MultiProcessAdapter
 from diffusers.utils.import_utils import is_xformers_available
 from huggingface_hub import HfFolder, whoami
 from packaging import version
@@ -67,7 +70,9 @@ def split(l, n, idx):
     return l[idx]
 
 
-def args_checker(args, logger):
+def args_checker(
+    args: Namespace, logger: MultiProcessAdapter, nb_training_examples: int
+) -> None:
     assert args.use_pytorch_loader, "Only PyTorch loader is supported for now."
 
     if args.dataset_name is None and args.train_data_dir is None:
@@ -93,8 +98,27 @@ def args_checker(args, logger):
             "Gradient accumulation may (probably) fail as the class embedding is not wrapped inside `accelerate.accumulate` context manager; TODO!"
         )
 
+    if args.debug:
+        print("\n\033[1;33m=====> DEBUG FLAG: MODIFYING PASSED ARGS\033[0m\n")
+        args.save_model_epochs = 1
+        args.generate_images_epochs = 1
+        args.nb_generated_images = args.eval_batch_size
+        args.num_training_steps = 10
+        args.num_inference_steps = 5
+        args.checkpoints_total_limit = 1
+        args.num_epochs = 1
+        # 3 checkpoints during the epoch
+        num_update_steps_per_epoch = ceil(
+            nb_training_examples / args.gradient_accumulation_steps
+        )
+        max_train_steps = args.num_epochs * num_update_steps_per_epoch
+        args.checkpointing_steps = max_train_steps // 3
+        args.kid_subset_size = min(1000, args.nb_generated_images)
 
-def create_repo_structure(args, accelerator) -> tuple[Path, Path, Path, None]:
+
+def create_repo_structure(
+    args: Namespace, accelerator, logger: MultiProcessAdapter
+) -> tuple[Path, Path, Path, None]:
     repo = None
     if args.push_to_hub:
         raise NotImplementedError()
@@ -134,6 +158,17 @@ def create_repo_structure(args, accelerator) -> tuple[Path, Path, Path, None]:
         args.output_dir, ".tmp_image_generation_folder"
     )
 
+    # verify that the checkpointing folder is empty if not resuming run from a checkpoint
+    chckpt_save_path = Path(args.output_dir, "checkpoints")
+    chckpts = list(chckpt_save_path.iterdir())
+    if (
+        accelerator.is_main_process
+        and not args.resume_from_checkpoint
+        and len(chckpts) > 0
+    ):
+        msg = "The checkpointing folder is not empty but the current run will not resume from a checkpoint. This may result in erasing the just-saved checkpoints during all training until it reaches the last checkpointing step present in the folder."
+        logger.warning(msg)
+
     return (
         image_generation_tmp_save_folder,
         initial_pipeline_save_folder,
@@ -142,12 +177,14 @@ def create_repo_structure(args, accelerator) -> tuple[Path, Path, Path, None]:
     )
 
 
-def setup_logger(logger, accelerator):
+def setup_logger(logger: MultiProcessAdapter, accelerator) -> None:
+    # set default logging format
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
         level=logging.INFO,
     )
+    # print one message per process
     logger.info(accelerator.state, main_process_only=False)
     if accelerator.is_local_main_process:
         datasets.utils.logging.set_verbosity_warning()
@@ -157,7 +194,9 @@ def setup_logger(logger, accelerator):
         diffusers.utils.logging.set_verbosity_error()
 
 
-def setup_xformers_memory_efficient_attention(model, logger):
+def setup_xformers_memory_efficient_attention(
+    model: diffusers.ModelMixin, logger: MultiProcessAdapter
+) -> None:
     if is_xformers_available():
         import xformers
 

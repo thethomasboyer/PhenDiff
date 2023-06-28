@@ -114,16 +114,40 @@ def get_training_setup(
     actual_eval_batch_sizes_for_this_process = split(
         glob_eval_bs, nb_proc, accelerator.process_index
     )
-    # TODO: log more info
-    logger.info("***** Running training *****")
-    logger.info(f"  Num examples = {len(dataset)}")
-    logger.info(f"  Num Epochs = {args.num_epochs}")
-    logger.info(f"  Instantaneous batch size per device = {args.train_batch_size}")
+    accelerator.print("")
     logger.info(
-        f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}"
+        "\033[1m************************* Running training *************************\033[0m"
     )
-    logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
-    logger.info(f"  Total optimization steps = {max_train_steps}")
+    logger.info(f"  Num examples = \033[1m{len(dataset)}\033[0m")
+    logger.info(f"  Num epochs = \033[1m{args.num_epochs}\033[0m")
+    logger.info(
+        f"  Instantaneous batch size per device = \033[1m{args.train_batch_size}\033[0m"
+    )
+    logger.info(
+        f"  Total train batch size (w. parallel, distributed & accumulation) = \033[1m{total_batch_size}\033[0m"
+    )
+    logger.info(
+        f"  Gradient Accumulation steps = \033[1m{args.gradient_accumulation_steps}\033[0m"
+    )
+    logger.info(f"  Total optimization steps = \033[1m{max_train_steps}\033[0m")
+    logger.info(
+        f"  Num steps between checkpoints = \033[1m{args.checkpointing_steps}\033[0m"
+    )
+    tot_nb_chckpts = max_train_steps // args.checkpointing_steps
+    logger.info(f"  Num checkpoints during training = \033[1m{tot_nb_chckpts}\033[0m")
+    logger.info(f"  Components to train = \033[1m{args.components_to_train}\033[0m")
+    logger.info(f"  Output dir = \033[1m{args.output_dir}\033[0m")
+    logger.info(
+        f"  Probability of unconditional pass = \033[1m{args.proba_uncond}\033[0m"
+    )
+    logger.info(f"  Learning rate = \033[1m{args.learning_rate}\033[0m")
+    logger.info(f"  Num generated images = \033[1m{args.nb_generated_images}\033[0m")
+    logger.info(
+        f"  Num diffusion discretization steps = \033[1m{args.num_training_steps}\033[0m"
+    )
+    logger.info(
+        f"  Num diffusion generation steps = \033[1m{args.num_inference_steps}\033[0m"
+    )
 
     return (
         num_update_steps_per_epoch,
@@ -376,9 +400,7 @@ def _syn_training_state(
                     : -args.checkpoints_total_limit
                 ]
                 if len(to_del) > 1:
-                    logger.warning(
-                        "More than 1 checkpoint to delete? Previous delete must have failed..."
-                    )
+                    logger.warning("More than 1 checkpoint to delete")
                 for dir in to_del:
                     logger.info(f"Deleting {dir}...")
                     rmtree(Path(args.output_dir, "checkpoints", dir))
