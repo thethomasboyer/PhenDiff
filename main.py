@@ -108,12 +108,14 @@ def main(args: Namespace):
         cache_dir=initial_pipeline_save_folder,
     )
 
-    # Load the pretrained components
+    # Load the pretrained components:
+    # vae
     autoencoder_model: AutoencoderKL = AutoencoderKL.from_pretrained(
         initial_pipeline_save_path,
         subfolder="vae",
         local_files_only=True,
     )
+    # denoiser
     if args.learn_denoiser_from_scratch:
         denoiser_model_config = UNet2DConditionModel.load_config(
             Path(initial_pipeline_save_path, "unet", "config.json"),
@@ -127,6 +129,26 @@ def main(args: Namespace):
             subfolder="unet",
             local_files_only=True,
         )
+    # noise scheduler:
+    # if relevant args are None then use the "pretrained" values
+    noise_scheduler_kwargs = [
+        "num_train_timesteps",
+        "beta_start",
+        "beta_end",
+        "beta_schedule",
+        "prediction_type",
+    ]
+    noise_scheduler_kwargs_vals = {
+        k: v
+        for k, v in vars(args).items()
+        if k in noise_scheduler_kwargs and v is not None
+    }  # only overwrite if not None
+    noise_scheduler: DDIMScheduler = DDIMScheduler.from_pretrained(
+        initial_pipeline_save_path,
+        subfolder="scheduler",
+        local_files_only=True,
+        **noise_scheduler_kwargs_vals,
+    )
 
     # ----------------- Custom Class Embeddings ----------------
     # create a custom class inheriting from diffusers.ModelMixin
@@ -159,15 +181,6 @@ def main(args: Namespace):
         denoiser_model.requires_grad_(False)
     if not "class_embedding" in args.components_to_train:
         class_embedding.requires_grad_(False)
-
-    # --------------------- Noise Scheduler --------------------
-    noise_scheduler = DDIMScheduler(
-        num_train_timesteps=args.num_training_steps,
-        beta_start=args.beta_start,
-        beta_end=args.beta_end,
-        beta_schedule=args.beta_schedule,
-        prediction_type=args.prediction_type,
-    )
 
     # ---------------------- Miscellaneous ---------------------
 
