@@ -20,6 +20,7 @@ from argparse import Namespace
 def parse_args() -> Namespace:
     # define parser
     parser = argparse.ArgumentParser(description="The main training script.")
+
     # define args
     parser.add_argument(
         "--debug",
@@ -29,21 +30,21 @@ def parse_args() -> Namespace:
     )
     parser.add_argument(
         "--components_to_train",
-        default=["denoiser", "class_embedding"],
         nargs="+",
         type=str,
         choices=["denoiser", "autoencoder", "class_embedding"],
         help="The components to train.",
+        required=True,
     )
     parser.add_argument(
         "--dataset_name",
         type=str,
-        default=None,
         help=(
             "The name of the Dataset (from the HuggingFace hub) to train on (could be your own, possibly private,"
             " dataset). It can also be a path pointing to a local copy of a dataset in your filesystem,"
             " or to a folder containing files that HF Datasets can understand."
         ),
+        required=True,
     )
     parser.add_argument(
         "--dataset_config_name",
@@ -86,7 +87,7 @@ def parse_args() -> Namespace:
     )
     parser.add_argument(
         "--use_pytorch_loader",
-        default=False,
+        default=True,
         action="store_true",
         help="Whether to use the PyTorch ImageFolder loader instead of the HF Dataset loader. Usefull for folder symlinks...",
     )
@@ -96,7 +97,6 @@ def parse_args() -> Namespace:
         required=True,
         help="The output directory where the model predictions and checkpoints will be written. Will be used as the WandB project name!",
     )
-    parser.add_argument("--overwrite_output_dir", action="store_true")
     parser.add_argument(
         "--cache_dir",
         type=str,
@@ -106,10 +106,9 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "--resolution",
         type=int,
-        default=64,
+        required=True,
         help=(
-            "The resolution for input images, all the images in the train/validation dataset will be resized to this"
-            " resolution"
+            "The resolution for input images, all the images in the train/validation dataset will be resized to this resolution"
         ),
     )
     parser.add_argument(
@@ -130,19 +129,19 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "--train_batch_size",
         type=int,
-        default=16,
+        required=True,
         help="Batch size (per device) for the training dataloader.",
     )
     parser.add_argument(
         "--eval_batch_size",
         type=int,
-        default=16,
+        required=True,
         help="The batch size (per GPU) for evaluation.",
     )
     parser.add_argument(
         "--dataloader_num_workers",
         type=int,
-        default=0,
+        default=4,
         help=(
             "The number of subprocesses to use for data loading. 0 means that the data will be loaded in the main"
             " process."
@@ -152,17 +151,17 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "--generate_images_epochs",
         type=int,
-        default=100,
+        required=True,
         help="How often to save images during training.",
     )
-    parser.add_argument("--compute_fid", action="store_true")
-    parser.add_argument("--compute_isc", action="store_true")
-    parser.add_argument("--compute_kid", action="store_true")
+    parser.add_argument("--compute_fid", action="store_true", default=True)
+    parser.add_argument("--compute_isc", action="store_true", default=False)
+    parser.add_argument("--compute_kid", action="store_true", default=True)
     help_msg = "How many images to generate (per class) for metrics computation. "
     help_msg += (
         "Only a fraction of the first batch will be logged; the rest will be lost."
     )
-    parser.add_argument("--nb_generated_images", type=int, default=1000, help=help_msg)
+    parser.add_argument("--nb_generated_images", type=int, required=True, help=help_msg)
     parser.add_argument(
         "--kid_subset_size",
         type=int,
@@ -172,13 +171,17 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "--save_model_epochs",
         type=int,
-        default=100,
+        required=True,
         help="How often to save the model during training.",
     )
     parser.add_argument(
         "--guidance_factor",
         type=float,
-        help="The scaling factor of the guidance ('ω' in the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf; *not* the same definition that in the Classifier-Free Diffusion Guidance paper!). Set to <= 1 to disable guidance.",
+        required=True,
+        help=(
+            "The scaling factor of the guidance ('ω' in the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf; "
+            "*not* the same definition that in the Classifier-Free Diffusion Guidance paper!). Set to <= 1 to disable guidance."
+        ),
     )
     parser.add_argument(
         "--proba_uncond",
@@ -190,7 +193,7 @@ def parse_args() -> Namespace:
         "--class_embedding_type",
         type=str,
         default="embedding",
-        choices=["OHE", "embedding"],
+        choices=["embedding"],
         help="The kind of class embedding to use.",
     )
     parser.add_argument(
@@ -214,7 +217,7 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "--learning_rate",
         type=float,
-        default=1e-4,
+        required=True,
         help="Initial learning rate (after the potential warmup period) to use.",
     )
     parser.add_argument(
@@ -259,6 +262,7 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "--use_ema",
         action="store_true",
+        default=True,
         help="Whether to use Exponential Moving Average for the final model weights.",
     )
     parser.add_argument(
@@ -282,6 +286,7 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "--push_to_hub",
         action="store_true",
+        default=False,
         help="Whether or not to push the model to the Hub.",
     )
     parser.add_argument(
@@ -328,19 +333,47 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "--prediction_type",
         type=str,
-        default="epsilon",
+        default=None,
         choices=["epsilon", "sample", "velocity"],
-        help="Whether the model should predict the 'epsilon'/noise error, directly the reconstructed image 'x0', or the velocity (see https://arxiv.org/abs/2202.00512)",
+        help=(
+            "Whether the model should predict the 'epsilon'/noise error, directly the reconstructed image 'x0', "
+            "or the velocity (see https://arxiv.org/abs/2202.00512). If None will use the prediction type of the pretrained model."
+        ),
     )
-    parser.add_argument("--num_training_steps", type=int, default=1000)
-    parser.add_argument("--num_inference_steps", type=int, default=50)
-    parser.add_argument("--beta_schedule", type=str, default="squaredcos_cap_v2")
-    parser.add_argument("--beta_start", type=float, default=0.0001)
-    parser.add_argument("--beta_end", type=float, default=0.02)
+    parser.add_argument(
+        "--num_training_steps",
+        type=int,
+        default=None,
+        help_msg="If None will use the value of the pretrained model.",
+    )
+    parser.add_argument(
+        "--num_inference_steps",
+        type=int,
+        default=None,
+        help_msg="If None will use the value of the pretrained model.",
+    )
+    parser.add_argument(
+        "--beta_schedule",
+        type=str,
+        default=None,
+        help_msg="If None will use the value of the pretrained model.",
+    )
+    parser.add_argument(
+        "--beta_start",
+        type=float,
+        default=None,
+        help_msg="If None will use the value of the pretrained model.",
+    )
+    parser.add_argument(
+        "--beta_end",
+        type=float,
+        default=None,
+        help_msg="If None will use the value of the pretrained model.",
+    )
     parser.add_argument(
         "--checkpointing_steps",
         type=int,
-        default=1000,
+        required=True,
         help=(
             "Save a checkpoint of the training state every X updates. These checkpoints are only suitable for resuming"
             " training using `--resume_from_checkpoint`."
@@ -349,7 +382,7 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "--checkpoints_total_limit",
         type=int,
-        default=5,
+        required=True,
         help=(
             "Max number of checkpoints to store. Passed as `total_limit` to the `Accelerator` `ProjectConfiguration`."
             " See Accelerator::save_state https://huggingface.co/docs/accelerate/package_reference/accelerator#accelerate.Accelerator.save_state"
@@ -370,6 +403,7 @@ def parse_args() -> Namespace:
         action="store_true",
         help="Whether or not to use xformers.",
     )
+
     # parse args
     args: Namespace = parser.parse_args()
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
