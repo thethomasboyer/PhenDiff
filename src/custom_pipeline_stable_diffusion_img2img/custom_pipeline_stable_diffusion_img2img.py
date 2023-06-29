@@ -336,7 +336,7 @@ class CustomStableDiffusionImg2ImgPipeline(
         if image is None and strength != 1:
             warn(
                 "`image` is None so the generation will start from pure Gaussian noise, "
-                "but `strength` is not set to 1 so the denoising process will not run for the full denoising trajectory."
+                "but `strength` is not set to 1 so the denoising process will not run for the full denoising trajectory. "
                 "This will produce images that are not fully denoised."
             )
 
@@ -555,7 +555,8 @@ class CustomStableDiffusionImg2ImgPipeline(
 
         # here `guidance_scale` is defined analog to the guidance weight `w` of equation (2)
         # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`
-        # corresponds to doing no classifier free guidance.
+        # corresponds to doing no classifier free guidance, and for HF guidance_scale <= 1
+        # also means no CLF
         do_classifier_free_guidance = guidance_scale > 1.0
 
         # 3. Encode input prompt
@@ -615,6 +616,7 @@ class CustomStableDiffusionImg2ImgPipeline(
                 latent_model_input = (
                     torch.cat([latents] * 2) if do_classifier_free_guidance else latents
                 )
+                # this does nothing for (Inverse)DDIM
                 latent_model_input = self.scheduler.scale_model_input(
                     latent_model_input, t
                 )
