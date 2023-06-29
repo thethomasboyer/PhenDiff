@@ -116,7 +116,7 @@ def get_training_setup(
     )
     accelerator.print("")
     logger.info(
-        "\033[1m************************* Running training *************************\033[0m"
+        "\033[1m******************************* Running training *******************************\033[0m"
     )
     logger.info(f"  Num examples = \033[1m{len(dataset)}\033[0m")
     logger.info(f"  Num epochs = \033[1m{args.num_epochs}\033[0m")
@@ -595,7 +595,7 @@ def save_pipeline(
         pipeline = CustomStableDiffusionImg2ImgPipeline.from_pretrained(
             full_pipeline_save_folder,
             unet=denoiser_model,
-            noise_schedule=noise_scheduler,
+            scheduler=noise_scheduler,
             class_embedding=class_embedding,
             local_files_only=True,  # do not pull from hub during training
         )
