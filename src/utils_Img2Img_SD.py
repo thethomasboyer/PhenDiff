@@ -42,9 +42,12 @@ def check_Gaussianity(gauss: Tensor) -> None:
 @torch.no_grad()
 def tensor_to_PIL(
     tensor: Tensor,
-    first_3_channels: bool = False,
+    channel: int | str = "mean",
 ) -> Image.Image | list[Image.Image]:
     assert tensor.ndim == 4, "Expecting a tensor of shape (N, C, H, W)"
+    assert channel in ["mean"] + list(
+        range(tensor.shape[1])
+    ), f"Expecting a channel in {list(range(tensor.shape[1]))} or 'mean', got {channel}"
 
     img_to_show = tensor.clone().detach()
     # these are latent vectors => return a grayscale image
@@ -53,15 +56,21 @@ def tensor_to_PIL(
         img_to_show -= img_to_show.min()
         img_to_show /= img_to_show.max()
         img_to_show = img_to_show.clamp(0, 1)
-        if first_3_channels:
-            # take the first 3 channels only for visualization
-            img_to_show = img_to_show[:, :3]
-        else:
+        if isinstance(channel, int):
+            # take the given channel only for visualization
+            img_to_show = img_to_show[:, channel].view(
+                tensor.shape[0], 1, tensor.shape[2], tensor.shape[3]
+            )
+        elif channel == "mean":
             # convert to grayscale taking the mean over the 4 channels
             img_to_show = img_to_show.mean(dim=1, keepdim=True)
     # these are "true" images => return a color image
     elif tensor.shape[1] == 3:
         assert tensor.min() >= -1 and tensor.max() <= 1, "Expecting values in [-1, 1]"
+        if tensor.min() != -1:
+            print(f"Warning in tensor_to_PIL: tensor.min() = {tensor.min().item()} != -1")
+        if tensor.max() != 1:
+            print(f"Warning in tensor_to_PIL: tensor.max() = {tensor.max().item()} != -1")
         img_to_show = (img_to_show / 2 + 0.5).clamp(0, 1)
 
     # convert to PIL image
