@@ -17,7 +17,6 @@ import os
 from math import ceil
 from pathlib import Path
 from shutil import rmtree
-from typing import Callable
 
 import numpy as np
 import torch
@@ -325,7 +324,7 @@ def _forward_backward_pass(
     # use the class embedding as the "encoder hidden state"
     encoder_hidden_states = class_emb
 
-    # Predict the noise residual
+    # obtain the model prediction
     model_output = denoiser_model(
         sample=noisy_images,
         timestep=timesteps,
@@ -346,9 +345,8 @@ def _forward_backward_pass(
         )  # use SNR weighting from distillation paper
         loss = loss.mean()
     elif noise_scheduler.config.prediction_type == "v_prediction":
-        raise NotImplementedError(
-            "Need to check that everything works for the v_prediction"
-        )
+        velocity = noise_scheduler.get_velocity(clean_images, noise, timesteps)
+        loss = F.mse_loss(model_output, velocity)
     else:
         raise ValueError(f"Unsupported prediction type: {args.prediction_type}")
 
@@ -400,7 +398,9 @@ def _syn_training_state(
                     : -args.checkpoints_total_limit
                 ]
                 if len(to_del) > 1:
-                    logger.warning("More than 1 checkpoint to delete")
+                    logger.warning(
+                        f"\033[1;33m=====> MORE THAN 1 CHECKPOINT TO DELETE:\033[0m\n {to_del}"
+                    )
                 for dir in to_del:
                     logger.info(f"Deleting {dir}...")
                     rmtree(Path(args.output_dir, "checkpoints", dir))

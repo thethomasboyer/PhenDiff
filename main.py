@@ -132,7 +132,7 @@ def main(args: Namespace):
     # noise scheduler:
     # if relevant args are None then use the "pretrained" values
     noise_scheduler_kwargs = [
-        "num_train_timesteps",
+        "num_training_steps",
         "beta_start",
         "beta_end",
         "beta_schedule",
@@ -143,6 +143,10 @@ def main(args: Namespace):
         for k, v in vars(args).items()
         if k in noise_scheduler_kwargs and v is not None
     }  # only overwrite if not None
+    if noise_scheduler_kwargs_vals != {}:
+        logger.warning(
+            f"\033[1;33m=====> WILL OVERWRITE THE FOLLOWING NOISE SCHEDULER KWARGS:\033[0m\n {noise_scheduler_kwargs_vals}"
+        )
     noise_scheduler: DDIMScheduler = DDIMScheduler.from_pretrained(
         initial_pipeline_save_path,
         subfolder="scheduler",
@@ -175,11 +179,11 @@ def main(args: Namespace):
     class_embedding.to(accelerator.device)
 
     # ❄️ >>> Freeze components <<< ❄️
-    if not "autoencoder" in args.components_to_train:
+    if "autoencoder" not in args.components_to_train:
         autoencoder_model.requires_grad_(False)
-    if not "denoiser" in args.components_to_train:
+    if "denoiser" not in args.components_to_train:
         denoiser_model.requires_grad_(False)
-    if not "class_embedding" in args.components_to_train:
+    if "class_embedding" not in args.components_to_train:
         class_embedding.requires_grad_(False)
 
     # ---------------------- Miscellaneous ---------------------

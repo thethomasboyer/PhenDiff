@@ -68,9 +68,13 @@ def tensor_to_PIL(
     elif tensor.shape[1] == 3:
         assert tensor.min() >= -1 and tensor.max() <= 1, "Expecting values in [-1, 1]"
         if tensor.min() != -1:
-            print(f"Warning in tensor_to_PIL: tensor.min() = {tensor.min().item()} != -1")
+            print(
+                f"Warning in tensor_to_PIL: tensor.min() = {tensor.min().item()} != -1"
+            )
         if tensor.max() != 1:
-            print(f"Warning in tensor_to_PIL: tensor.max() = {tensor.max().item()} != -1")
+            print(
+                f"Warning in tensor_to_PIL: tensor.max() = {tensor.max().item()} != -1"
+            )
         img_to_show = (img_to_show / 2 + 0.5).clamp(0, 1)
 
     # convert to PIL image
@@ -111,3 +115,14 @@ def print_grid(
             axes[row_nb, col_nb].set_title(titles[i])
     plt.tight_layout()
     plt.show()
+
+
+@torch.no_grad()
+def hack_class_embedding(cl_embed: Tensor) -> Tensor:
+    """Hack to match the expected encoder_hidden_states shape"""
+    assert cl_embed.ndim == 2, "Expecting a tensor of shape (N, E)"
+    (bs, ed) = cl_embed.shape
+    cl_embed = cl_embed.reshape(bs, 1, ed)
+    padding = torch.zeros_like(cl_embed).repeat(1, 76, 1).to(cl_embed.device)
+    cl_embed = torch.cat([cl_embed, padding], dim=1)
+    return cl_embed

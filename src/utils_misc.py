@@ -18,7 +18,6 @@ from argparse import Namespace
 from math import ceil
 from pathlib import Path
 from typing import Optional
-from warnings import warn
 
 import datasets
 import diffusers
@@ -94,19 +93,19 @@ def args_checker(
         )
 
     if args.gradient_accumulation_steps > 1:
-        warn(
+        logger.warning(
             "Gradient accumulation may (probably) fail as the class embedding is not wrapped inside `accelerate.accumulate` context manager; TODO!"
         )
 
     if args.debug:
-        print("\n\033[1;33m=====> DEBUG FLAG: MODIFYING PASSED ARGS\033[0m\n")
+        logger.warning("\033[1;33m=====> DEBUG FLAG: MODIFYING PASSED ARGS\033[0m\n")
         args.save_model_epochs = 1
         args.generate_images_epochs = 1
         args.nb_generated_images = args.eval_batch_size
         args.num_training_steps = 10
         args.num_inference_steps = 5
         args.checkpoints_total_limit = 1
-        args.num_epochs = 1
+        args.num_epochs = 3
         # 3 checkpoints during the epoch
         num_update_steps_per_epoch = ceil(
             nb_training_examples / args.gradient_accumulation_steps
@@ -160,14 +159,16 @@ def create_repo_structure(
 
     # verify that the checkpointing folder is empty if not resuming run from a checkpoint
     chckpt_save_path = Path(args.output_dir, "checkpoints")
-    chckpts = list(chckpt_save_path.iterdir())
-    if (
-        accelerator.is_main_process
-        and not args.resume_from_checkpoint
-        and len(chckpts) > 0
-    ):
-        msg = "The checkpointing folder is not empty but the current run will not resume from a checkpoint. This may result in erasing the just-saved checkpoints during all training until it reaches the last checkpointing step present in the folder."
-        logger.warning(msg)
+    if accelerator.is_main_process:
+        os.makedirs(chckpt_save_path, exist_ok=True)
+        chckpts = list(chckpt_save_path.iterdir())
+        if not args.resume_from_checkpoint and len(chckpts) > 0:
+            msg = (
+                "\033[1;33m=====> THE CHECKPOINTING FOLDER IS NOT EMPTY BUT THE CURRENT RUN WILL NOT RESUME FROM A CHECKPOINT. "
+                "THIS MAY RESULT IN ERASING THE JUST-SAVED CHECKPOINTS DURING ALL TRAINING "
+                "UNTIL IT REACHES THE LAST CHECKPOINTING STEP PRESENT IN THE FOLDER.\033[0m\n"
+            )
+            logger.warning(msg)
 
     return (
         image_generation_tmp_save_folder,

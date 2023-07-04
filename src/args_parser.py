@@ -39,12 +39,12 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "--dataset_name",
         type=str,
+        default=None,
         help=(
             "The name of the Dataset (from the HuggingFace hub) to train on (could be your own, possibly private,"
             " dataset). It can also be a path pointing to a local copy of a dataset in your filesystem,"
             " or to a folder containing files that HF Datasets can understand."
         ),
-        required=True,
     )
     parser.add_argument(
         "--dataset_config_name",
@@ -344,31 +344,31 @@ def parse_args() -> Namespace:
         "--num_training_steps",
         type=int,
         default=None,
-        help_msg="If None will use the value of the pretrained model.",
+        help="If None will use the value of the pretrained model.",
     )
     parser.add_argument(
         "--num_inference_steps",
         type=int,
         default=None,
-        help_msg="If None will use the value of the pretrained model.",
+        help="If None will use the value of the pretrained model.",
     )
     parser.add_argument(
         "--beta_schedule",
         type=str,
         default=None,
-        help_msg="If None will use the value of the pretrained model.",
+        help="If None will use the value of the pretrained model.",
     )
     parser.add_argument(
         "--beta_start",
         type=float,
         default=None,
-        help_msg="If None will use the value of the pretrained model.",
+        help="If None will use the value of the pretrained model.",
     )
     parser.add_argument(
         "--beta_end",
         type=float,
         default=None,
-        help_msg="If None will use the value of the pretrained model.",
+        help="If None will use the value of the pretrained model.",
     )
     parser.add_argument(
         "--checkpointing_steps",
