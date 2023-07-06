@@ -29,6 +29,7 @@ from diffusers import AutoencoderKL, DDIMScheduler, UNet2DConditionModel
 from diffusers.training_utils import EMAModel
 from PIL.Image import Image
 from torch.nn.parallel import DistributedDataParallel
+from torchvision.datasets import ImageFolder
 from tqdm.auto import tqdm
 
 import wandb
@@ -46,7 +47,7 @@ def resume_from_checkpoint(
     accelerator,
     num_update_steps_per_epoch: int,
     global_step: int,
-):
+) -> tuple[int, int, int]:
     if args.resume_from_checkpoint != "latest":
         path = os.path.basename(args.resume_from_checkpoint)
         path = os.path.join(args.output_dir, "checkpoints", path)
@@ -87,9 +88,9 @@ def get_training_setup(
     accelerator,
     train_dataloader,
     logger: MultiProcessAdapter,
-    dataset,
+    dataset: ImageFolder,
     noise_scheduler: DDIMScheduler,
-):
+) -> tuple[int, list[int]]:
     """
     Returns
     -------
@@ -175,11 +176,12 @@ def perform_training_epoch(
     global_step: int,
     optimizer,
     lr_scheduler,
-    ema_model: None | EMAModel,
+    ema_denoiser: None | EMAModel,
+    ema_autoencoder: None | EMAModel,
     logger: MultiProcessAdapter,
     class_embedding: CustomEmbedding,
     do_uncond_pass_across_all_procs: torch.BoolTensor,
-):
+) -> int:
     # set model to train mode
     denoiser_model.train()
 
@@ -251,13 +253,15 @@ def perform_training_epoch(
         # Checks if the accelerator has performed an optimization step behind the scenes
         if accelerator.sync_gradients:
             global_step = _syn_training_state(
-                args,
-                ema_model,
-                denoiser_model,
-                progress_bar,
-                global_step,
-                accelerator,
-                logger,
+                args=args,
+                ema_denoiser=ema_denoiser,
+                ema_autoencoder=ema_autoencoder,
+                denoiser_model=denoiser_model,
+                autoencoder_model=autoencoder_model,
+                progress_bar=progress_bar,
+                global_step=global_step,
+                accelerator=accelerator,
+                logger=logger,
             )
 
         # log some values & define W&B alert
@@ -268,7 +272,8 @@ def perform_training_epoch(
             "epoch": epoch,
         }
         if args.use_ema:
-            logs["ema_decay"] = ema_model.cur_decay_value
+            logs["ema_denoiser_decay"] = ema_denoiser.cur_decay_value
+            logs["ema_autoencoder_decay"] = ema_autoencoder.cur_decay_value
         progress_bar.set_postfix(**logs)
         accelerator.log(logs, step=global_step)
         if math.isnan(loss_value) and accelerator.is_main_process:
@@ -304,7 +309,7 @@ def _forward_backward_pass(
     class_embedding: CustomEmbedding,
     do_unconditional_pass: bool,
     logger: MultiProcessAdapter,
-):
+) -> float:
     # classifier-free guidance: randomly discard conditioning to train unconditionally
     accelerator.log(
         {
@@ -382,10 +387,19 @@ def _forward_backward_pass(
 
 
 def _syn_training_state(
-    args, ema_model, model, progress_bar, global_step, accelerator, logger
+    args: Namespace,
+    ema_denoiser: EMAModel | None,
+    ema_autoencoder: EMAModel | None,
+    denoiser_model: UNet2DConditionModel,
+    autoencoder_model: AutoencoderKL,
+    progress_bar,
+    global_step: int,
+    accelerator: Accelerator,
+    logger: MultiProcessAdapter,
 ) -> int:
     if args.use_ema:
-        ema_model.step(model.parameters())
+        ema_denoiser.step(denoiser_model.parameters())
+        ema_autoencoder.step(autoencoder_model.parameters())
     progress_bar.update()
     global_step += 1
 
@@ -417,21 +431,22 @@ def _syn_training_state(
 
 @torch.no_grad()
 def generate_samples_and_compute_metrics(
-    args,
-    accelerator,
+    args: Namespace,
+    accelerator: Accelerator,
     autoencoder_model: AutoencoderKL,
     denoiser_model: UNet2DConditionModel,
     class_embedding: CustomEmbedding,
-    ema_model,
-    noise_scheduler,
-    image_generation_tmp_save_folder,
+    ema_denoiser: EMAModel | None,
+    ema_autoencoder: EMAModel | None,
+    noise_scheduler: DDIMScheduler,
+    image_generation_tmp_save_folder: Path,
     actual_eval_batch_sizes_for_this_process,
-    epoch,
-    global_step,
-    full_pipeline_save_path,
+    epoch: int,
+    global_step: int,
+    full_pipeline_save_path: Path,
     nb_classes: int,
     logger: MultiProcessAdapter,
-    dataset,
+    dataset: ImageFolder,
     best_metric: float | None,
 ) -> tuple[bool | None, float | None]:
     progress_bar = tqdm(
@@ -444,11 +459,13 @@ def generate_samples_and_compute_metrics(
     autoencoder_model = accelerator.unwrap_model(autoencoder_model)
 
     if args.use_ema:
-        ema_model.store(denoiser_model.parameters())
-        ema_model.copy_to(denoiser_model.parameters())
+        ema_denoiser.store(denoiser_model.parameters())
+        ema_denoiser.copy_to(denoiser_model.parameters())
+        ema_autoencoder.store(autoencoder_model.parameters())
+        ema_autoencoder.copy_to(autoencoder_model.parameters())
 
     # load the previously downloaded pipeline
-    pipeline = CustomStableDiffusionImg2ImgPipeline.from_pretrained(
+    pipeline: CustomStableDiffusionImg2ImgPipeline = CustomStableDiffusionImg2ImgPipeline.from_pretrained(  # pyright: ignore reportGeneralTypeIssues
         full_pipeline_save_path,
         local_files_only=True,  # do not pull from hub during training
         # then override modified components:
@@ -456,7 +473,9 @@ def generate_samples_and_compute_metrics(
         unet=denoiser_model,
         scheduler=noise_scheduler,
         class_embedding=class_embedding,
-    ).to(accelerator.device)
+    ).to(
+        accelerator.device
+    )
     pipeline.set_progress_bar_config(disable=True)
 
     # set manual seed in order to observe the outputs produced from the same Gaussian noise
@@ -471,102 +490,39 @@ def generate_samples_and_compute_metrics(
     # Generate args.nb_generated_images in batches *per class*
     # for metrics computation
     for class_label in range(nb_classes):
-        # clean image_generation_tmp_save_folder (it's per-class)
-        if accelerator.is_local_main_process:
-            if os.path.exists(image_generation_tmp_save_folder):
-                rmtree(image_generation_tmp_save_folder)
-            os.makedirs(image_generation_tmp_save_folder, exist_ok=False)
-        accelerator.wait_for_everyone()
-
         # get class name
         class_name = dataset.classes[class_label]
 
-        # pretty bar
-        postfix_str = f"Current class: {class_name} ({class_label+1}/{nb_classes})"
-        progress_bar.set_postfix_str(postfix_str)
-
-        # loop over eval batches for this process
-        for batch_idx, actual_bs in enumerate(actual_eval_batch_sizes_for_this_process):
-            images: np.ndarray = pipeline(  # pyright: ignore reportGeneralTypeIssues
-                image=None,  # start generation from pure Gaussian noise
-                latent_shape=(actual_bs, 4, 16, 16),  # TODO: parametrize
-                class_labels=torch.tensor(
-                    [class_label] * actual_bs, device=accelerator.device
-                ).long(),
-                strength=1,  # no noise will actually be added if image=None
-                num_inference_steps=args.num_inference_steps,
-                guidance_scale=args.guidance_factor,
-                generator=generator,
-                output_type="np",
-                device=accelerator.device,
-            )
-
-            # save images to disk
-            images_pil: list[Image] = pipeline.numpy_to_pil(images)
-            for idx, img in enumerate(images_pil):
-                tot_idx = args.eval_batch_size * batch_idx + idx
-                filename = (
-                    f"process_{accelerator.local_process_index}_sample_{tot_idx}.png"
-                )
-                assert not Path(
-                    filename
-                ).exists(), "Rewriting existing generated image file!"
-                img.save(
-                    Path(
-                        image_generation_tmp_save_folder,
-                        filename,
-                    )
-                )
-
-            # denormalize the images and save to logger if first batch
-            # (first batch of main process only to prevent "logger overflow")
-            if batch_idx == 0 and accelerator.is_main_process:
-                images_processed = (images * 255).round().astype("uint8")
-                accelerator.log(
-                    {
-                        f"generated_samples/{class_name}": [
-                            wandb.Image(img) for img in images_processed[:50]
-                        ],
-                        "epoch": epoch,
-                    },
-                    step=global_step,
-                )
-            progress_bar.update()
-
+        # generate and save to disk all images for this class
+        _generate_save_images_for_this_class(
+            accelerator=accelerator,
+            image_generation_tmp_save_folder=image_generation_tmp_save_folder,
+            class_label=class_label,
+            class_name=class_name,
+            nb_classes=nb_classes,
+            progress_bar=progress_bar,
+            actual_eval_batch_sizes_for_this_process=actual_eval_batch_sizes_for_this_process,
+            args=args,
+            generator=generator,
+            pipeline=pipeline,
+            epoch=epoch,
+            global_step=global_step,
+        )
         # wait for all processes to finish generating+saving images
         # before computing metrics
         accelerator.wait_for_everyone()
 
-        # now compute metrics on main process
+        # compute metrics on main process for this class
         if accelerator.is_main_process:
-            logger.info(f"Computing metrics for class {class_name}...")
-            metrics_dict = torch_fidelity.calculate_metrics(
-                input1=args.train_data_dir + "/train" + f"/{class_name}",
-                input2=image_generation_tmp_save_folder.as_posix(),
-                cuda=True,
-                batch_size=args.eval_batch_size,
-                isc=args.compute_isc,
-                fid=args.compute_fid,
-                kid=args.compute_kid,
-                verbose=False,
-                cache_root=".fidelity_cache",
-                input1_cache_name=f"{class_name}",  # forces caching
-                rng_seed=42,
-                kid_subset_size=args.kid_subset_size,
+            _compute_log_metrics(
+                logger=logger,
+                class_name=class_name,
+                args=args,
+                image_generation_tmp_save_folder=image_generation_tmp_save_folder,
+                accelerator=accelerator,
+                global_step=global_step,
+                main_metric_values=main_metric_values,
             )
-
-            for metric_name, metric_value in metrics_dict.items():
-                accelerator.log(
-                    {
-                        f"{metric_name}/{class_name}": metric_value,
-                    },
-                    step=global_step,
-                )
-                if metric_name == args.main_metric:
-                    main_metric_values.append(metric_value)
-
-            # clear the tmp folder for this class
-            rmtree(image_generation_tmp_save_folder)
 
         # resync everybody for each class
         accelerator.wait_for_everyone()
@@ -574,16 +530,130 @@ def generate_samples_and_compute_metrics(
     # is it the best model to date?
     if accelerator.is_main_process:
         best_model_to_date, best_metric = is_it_best_model(
-            main_metric_values, best_metric
+            main_metric_values, best_metric, logger
         )
     else:
         best_model_to_date = None
         best_metric = None
 
     if args.use_ema:
-        ema_model.restore(denoiser_model.parameters())
+        ema_denoiser.restore(denoiser_model.parameters())
+        ema_autoencoder.restore(autoencoder_model.parameters())
 
     return best_model_to_date, best_metric
+
+
+@torch.no_grad()
+def _generate_save_images_for_this_class(
+    accelerator: Accelerator,
+    image_generation_tmp_save_folder: Path,
+    class_label: int,
+    class_name: str,
+    nb_classes: int,
+    progress_bar,
+    actual_eval_batch_sizes_for_this_process,
+    args: Namespace,
+    generator: torch.Generator,
+    pipeline: CustomStableDiffusionImg2ImgPipeline,
+    epoch: int,
+    global_step: int,
+) -> None:
+    # clean image_generation_tmp_save_folder (it's per-class)
+    if accelerator.is_local_main_process:
+        if os.path.exists(image_generation_tmp_save_folder):
+            rmtree(image_generation_tmp_save_folder)
+        os.makedirs(image_generation_tmp_save_folder, exist_ok=False)
+    accelerator.wait_for_everyone()
+
+    # pretty bar
+    postfix_str = f"Current class: {class_name} ({class_label+1}/{nb_classes})"
+    progress_bar.set_postfix_str(postfix_str)
+
+    # loop over eval batches for this process
+    for batch_idx, actual_bs in enumerate(actual_eval_batch_sizes_for_this_process):
+        images: np.ndarray = pipeline(  # pyright: ignore reportGeneralTypeIssues
+            image=None,  # start generation from pure Gaussian noise
+            latent_shape=(actual_bs, 4, 16, 16),  # TODO: parametrize
+            class_labels=torch.tensor(
+                [class_label] * actual_bs, device=accelerator.device
+            ).long(),
+            strength=1,  # no noise will actually be added if image=None
+            num_inference_steps=args.num_inference_steps,
+            guidance_scale=args.guidance_factor,
+            generator=generator,
+            output_type="np",
+            device=accelerator.device,
+        )
+
+        # save images to disk
+        images_pil: list[Image] = pipeline.numpy_to_pil(images)
+        for idx, img in enumerate(images_pil):
+            tot_idx = args.eval_batch_size * batch_idx + idx
+            filename = f"process_{accelerator.local_process_index}_sample_{tot_idx}.png"
+            assert not Path(
+                filename
+            ).exists(), "Rewriting existing generated image file!"
+            img.save(
+                Path(
+                    image_generation_tmp_save_folder,
+                    filename,
+                )
+            )
+
+        # denormalize the images and save to logger if first batch
+        # (first batch of main process only to prevent "logger overflow")
+        if batch_idx == 0 and accelerator.is_main_process:
+            images_processed = (images * 255).round().astype("uint8")
+            accelerator.log(
+                {
+                    f"generated_samples/{class_name}": [
+                        wandb.Image(img) for img in images_processed[:50]
+                    ],
+                    "epoch": epoch,
+                },
+                step=global_step,
+            )
+        progress_bar.update()
+
+
+@torch.no_grad()
+def _compute_log_metrics(
+    logger: MultiProcessAdapter,
+    class_name: str,
+    args: Namespace,
+    image_generation_tmp_save_folder: Path,
+    accelerator: Accelerator,
+    global_step: int,
+    main_metric_values: list[float],
+) -> None:
+    logger.info(f"Computing metrics for class {class_name}...")
+    metrics_dict = torch_fidelity.calculate_metrics(
+        input1=args.train_data_dir + "/train" + f"/{class_name}",
+        input2=image_generation_tmp_save_folder.as_posix(),
+        cuda=True,
+        batch_size=args.eval_batch_size,
+        isc=args.compute_isc,
+        fid=args.compute_fid,
+        kid=args.compute_kid,
+        verbose=False,
+        cache_root=".fidelity_cache",
+        input1_cache_name=f"{class_name}",  # forces caching
+        rng_seed=42,
+        kid_subset_size=args.kid_subset_size,
+    )
+
+    for metric_name, metric_value in metrics_dict.items():
+        accelerator.log(
+            {
+                f"{metric_name}/{class_name}": metric_value,
+            },
+            step=global_step,
+        )
+        if metric_name == args.main_metric:
+            main_metric_values.append(metric_value)
+
+    # clear the tmp folder for this class
+    rmtree(image_generation_tmp_save_folder)
 
 
 def save_pipeline(
@@ -592,14 +662,15 @@ def save_pipeline(
     denoiser_model: UNet2DConditionModel,
     class_embedding: CustomEmbedding,
     args: Namespace,
-    ema_model: EMAModel | None,
+    ema_denoiser: EMAModel | None,
+    ema_autoencoder: EMAModel | None,
     noise_scheduler: DDIMScheduler,
     full_pipeline_save_folder: Path,
     repo,
     epoch: int,
     logger: MultiProcessAdapter,
     first_save: bool = False,
-):
+) -> None:
     if (
         first_save
         and full_pipeline_save_folder.exists()
@@ -614,8 +685,10 @@ def save_pipeline(
     class_embedding = accelerator.unwrap_model(class_embedding)
 
     if args.use_ema:
-        ema_model.store(denoiser_model.parameters())
-        ema_model.copy_to(denoiser_model.parameters())
+        ema_denoiser.store(denoiser_model.parameters())
+        ema_denoiser.copy_to(denoiser_model.parameters())
+        ema_autoencoder.store(autoencoder_model.parameters())
+        ema_autoencoder.copy_to(autoencoder_model.parameters())
 
     if isinstance(autoencoder_model, DistributedDataParallel):
         # for some reason .save_pretrained does not unwrap the vae?
@@ -633,7 +706,8 @@ def save_pipeline(
     pipeline.save_pretrained(full_pipeline_save_folder)
 
     if args.use_ema:
-        ema_model.restore(denoiser_model.parameters())
+        ema_denoiser.restore(denoiser_model.parameters())
+        ema_autoencoder.restore(autoencoder_model.parameters())
 
     if args.push_to_hub:
         repo.push_to_hub(commit_message=f"Epoch {epoch}", blocking=False)

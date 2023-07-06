@@ -165,20 +165,7 @@ def main(args: Namespace):
     # ----------------- Custom Class Embeddings ----------------
     # create a custom class inheriting from diffusers.ModelMixin
     # in order to use Hugging Face's routines
-    match args.class_embedding_type:
-        case "one_hot":
-            raise NotImplementedError(
-                "Dimensions will mismatch with one-hot encoding; TODO: fix"
-            )
-            # class_embedding = torch.nn.functional.one_hot(torch.arange(nb_classes))
-            # ..?
-            # class_embedding.to(accelerator.device)
-        case "embedding":
-            class_embedding = CustomEmbedding(nb_classes, args.class_embedding_dim)
-        case _:
-            raise ValueError(
-                f"Unrecognized class embedding type: {args.class_embedding_type}"
-            )
+    class_embedding = CustomEmbedding(nb_classes, args.class_embedding_dim)
 
     # ---------------- Move & Freeze Components ----------------
     # Move components to device
@@ -195,10 +182,9 @@ def main(args: Namespace):
         class_embedding.requires_grad_(False)
 
     # ---------------------- Miscellaneous ---------------------
-
-    # Create EMA for the unet model
+    # Create EMA for the models
     if args.use_ema:
-        ema_unet = EMAModel(
+        ema_denoiser = EMAModel(
             denoiser_model.parameters(),
             decay=args.ema_max_decay,
             use_ema_warmup=True,
@@ -207,8 +193,18 @@ def main(args: Namespace):
             model_cls=UNet2DConditionModel,
             model_config=denoiser_model.config,
         )
+        ema_autoencoder = EMAModel(
+            autoencoder_model.parameters(),
+            decay=args.ema_max_decay,
+            use_ema_warmup=True,
+            inv_gamma=args.ema_inv_gamma,
+            power=args.ema_power,
+            model_cls=AutoencoderKL(),
+            model_config=autoencoder_model.config,
+        )
     else:
-        ema_unet = None
+        ema_denoiser = None
+        ema_autoencoder = None
 
     if args.enable_xformers_memory_efficient_attention:
         setup_xformers_memory_efficient_attention(denoiser_model, logger)
@@ -226,7 +222,8 @@ def main(args: Namespace):
             denoiser_model=denoiser_model,
             class_embedding=class_embedding,
             args=args,
-            ema_model=ema_unet,
+            ema_denoiser=ema_denoiser,
+            ema_autoencoder=ema_autoencoder,
             noise_scheduler=noise_scheduler,
             full_pipeline_save_folder=full_pipeline_save_folder,
             repo=repo,
@@ -300,7 +297,8 @@ def main(args: Namespace):
 
     # --------------------- Training Setup ---------------------
     if args.use_ema:
-        ema_unet.to(accelerator.device)
+        ema_denoiser.to(accelerator.device)
+        ema_autoencoder.to(accelerator.device)
 
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
@@ -325,10 +323,11 @@ def main(args: Namespace):
             args, logger, accelerator, num_update_steps_per_epoch, global_step
         )
 
-    # ---------------------- Training loop ---------------------
+    # ------------------ Initial best metrics ------------------
     if accelerator.is_main_process:
         best_metric = get_initial_best_metric()
 
+    # ---------------------- Training loop ---------------------
     for epoch in range(first_epoch, args.num_epochs):
         # Training epoch
         global_step = perform_training_epoch(
@@ -345,7 +344,8 @@ def main(args: Namespace):
             global_step=global_step,
             optimizer=optimizer,
             lr_scheduler=lr_scheduler,
-            ema_model=ema_unet,
+            ema_denoiser=ema_denoiser,
+            ema_autoencoder=ema_autoencoder,
             logger=logger,
             class_embedding=class_embedding,
             do_uncond_pass_across_all_procs=do_uncond_pass_across_all_procs,
@@ -362,7 +362,8 @@ def main(args: Namespace):
                 autoencoder_model=autoencoder_model,
                 denoiser_model=denoiser_model,
                 class_embedding=class_embedding,
-                ema_model=ema_unet,
+                ema_denoiser=ema_denoiser,
+                ema_autoencoder=ema_autoencoder,
                 noise_scheduler=noise_scheduler,
                 image_generation_tmp_save_folder=image_generation_tmp_save_folder,
                 actual_eval_batch_sizes_for_this_process=actual_eval_batch_sizes_for_this_process,
@@ -390,7 +391,8 @@ def main(args: Namespace):
                         denoiser_model=denoiser_model,
                         class_embedding=class_embedding,
                         args=args,
-                        ema_model=ema_unet,
+                        ema_denoiser=ema_denoiser,
+                        ema_autoencoder=ema_autoencoder,
                         noise_scheduler=noise_scheduler,
                         full_pipeline_save_folder=full_pipeline_save_folder,
                         repo=repo,

@@ -196,13 +196,6 @@ def parse_args() -> Namespace:
         help="The probability of sampling unconditionally instead of conditionally for the CLF.",
     )
     parser.add_argument(
-        "--class_embedding_type",
-        type=str,
-        default="embedding",
-        choices=["embedding"],
-        help="The kind of class embedding to use.",
-    )
-    parser.add_argument(
         "--class_embedding_dim",
         type=int,
         default=1024,

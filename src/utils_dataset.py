@@ -12,21 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from argparse import Namespace
 from pathlib import Path
 
 import torch
+from accelerate.logging import MultiProcessAdapter
 from datasets import load_dataset
 from torchvision import transforms
 from torchvision.datasets import ImageFolder
 
 
-def setup_dataset(args, logger):
+def setup_dataset(
+    args: Namespace, logger: MultiProcessAdapter
+) -> tuple[ImageFolder, int]:
     # Get the datasets: you can either provide your own training and evaluation files (see below)
     # or specify a Dataset from the hub (the dataset will be downloaded automatically from the datasets Hub).
 
     # In distributed training, the load_dataset function guarantees that only one local process can concurrently
     # download the dataset.
     if args.dataset_name is not None:
+        raise NotImplementedError("Not tested yet")
         dataset = load_dataset(
             args.dataset_name,
             args.dataset_config_name,
@@ -34,12 +39,13 @@ def setup_dataset(args, logger):
             split="train",
         )
     elif args.use_pytorch_loader:
-        dataset = ImageFolder(
+        dataset: ImageFolder = ImageFolder(
             root=Path(args.train_data_dir, args.split).as_posix(),
             transform=lambda x: augmentations(x.convert("RGB")),
             target_transform=lambda y: torch.tensor(y).long(),
         )
     else:
+        raise NotImplementedError("Not tested yet")
         dataset = load_dataset(
             "imagefolder",
             data_dir=args.train_data_dir,
@@ -69,6 +75,7 @@ def setup_dataset(args, logger):
     logger.info(f"Number of classes: {len(dataset.classes)}")
 
     if not args.use_pytorch_loader:
+        raise NotImplementedError("Not tested yet")
         dataset.set_transform(transform_images)
 
     return dataset, len(dataset.classes)

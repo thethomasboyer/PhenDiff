@@ -59,7 +59,7 @@ def get_full_repo_name(
         return f"{organization}/{model_id}"
 
 
-def split(l, n, idx):
+def split(l, n, idx) -> list[int]:
     """
     https://stackoverflow.com/questions/2130016/splitting-a-list-into-n-parts-of-approximately-equal-length
 
@@ -216,10 +216,14 @@ def modify_args_for_debug(
 
 
 def is_it_best_model(
-    main_metric_values: list[float], best_metric: float
+    main_metric_values: list[float],
+    best_metric: float,
+    logger: MultiProcessAdapter,
 ) -> tuple[bool, float]:
-    if np.mean(main_metric_values) < best_metric:
-        best_metric = np.mean(main_metric_values)
+    current_value = np.mean(main_metric_values)
+    if current_value < best_metric:
+        logger.info(f"New best model with metric {current_value}")
+        best_metric = current_value
         best_model_to_date = True
     else:
         best_model_to_date = False
