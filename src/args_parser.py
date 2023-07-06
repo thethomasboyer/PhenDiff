@@ -154,6 +154,12 @@ def parse_args() -> Namespace:
         required=True,
         help="How often to evaluate and save (if --main_metric is the best recorded to date) the model during training.",
     )
+    parser.add_argument(
+        "--precise_first_n_epochs",
+        type=int,
+        default=None,
+        help="Whether to evaluate the model every epoch during the first n epochs. Ignored if None.",
+    )
     parser.add_argument("--compute_fid", action="store_true", default=True)
     parser.add_argument("--compute_isc", action="store_true", default=False)
     parser.add_argument("--compute_kid", action="store_true", default=True)

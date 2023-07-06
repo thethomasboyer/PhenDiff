@@ -326,10 +326,8 @@ def main(args: Namespace):
         )
 
     # ---------------------- Training loop ---------------------
-    best_metric = get_initial_best_metric()
-    # perform all saves until metrics are computed
-    # (given best_metric is properly initialized)
-    best_model_to_date = True
+    if accelerator.is_main_process:
+        best_metric = get_initial_best_metric()
 
     for epoch in range(first_epoch, args.num_epochs):
         # Training epoch
@@ -354,7 +352,10 @@ def main(args: Namespace):
         )
 
         # Generate sample images for visual inspection & metrics computation
-        if epoch % args.eval_save_model_every_epochs == 0:
+        if epoch % args.eval_save_model_every_epochs == 0 or (
+            args.precise_first_n_epochs is not None
+            and epoch < args.precise_first_n_epochs
+        ):
             best_model_to_date, best_metric = generate_samples_and_compute_metrics(
                 args=args,
                 accelerator=accelerator,
@@ -371,30 +372,31 @@ def main(args: Namespace):
                 nb_classes=nb_classes,
                 logger=logger,
                 dataset=dataset,
-                best_metric=best_metric,
-            )
-            # log best model indicator
-            accelerator.log(
-                {
-                    "best_model_to_date": int(best_model_to_date),
-                },
-                step=global_step,
+                best_metric=best_metric if accelerator.is_main_process else None,
             )
             # save model if best to date
-            if accelerator.is_main_process and epoch != 0 and best_model_to_date:
-                save_pipeline(
-                    accelerator=accelerator,
-                    autoencoder_model=autoencoder_model,
-                    denoiser_model=denoiser_model,
-                    class_embedding=class_embedding,
-                    args=args,
-                    ema_model=ema_unet,
-                    noise_scheduler=noise_scheduler,
-                    full_pipeline_save_folder=full_pipeline_save_folder,
-                    repo=repo,
-                    epoch=epoch,
-                    logger=logger,
+            if accelerator.is_main_process:
+                # log best model indicator
+                accelerator.log(
+                    {
+                        "best_model_to_date": int(best_model_to_date),
+                    },
+                    step=global_step,
                 )
+                if epoch != 0 and best_model_to_date:
+                    save_pipeline(
+                        accelerator=accelerator,
+                        autoencoder_model=autoencoder_model,
+                        denoiser_model=denoiser_model,
+                        class_embedding=class_embedding,
+                        args=args,
+                        ema_model=ema_unet,
+                        noise_scheduler=noise_scheduler,
+                        full_pipeline_save_folder=full_pipeline_save_folder,
+                        repo=repo,
+                        epoch=epoch,
+                        logger=logger,
+                    )
 
         # do not start new epoch before generation & pipeline saving is done
         accelerator.wait_for_everyone()

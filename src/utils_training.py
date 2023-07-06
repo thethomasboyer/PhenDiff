@@ -432,27 +432,28 @@ def generate_samples_and_compute_metrics(
     nb_classes: int,
     logger: MultiProcessAdapter,
     dataset,
-    best_metric: float,
-) -> tuple[bool, float]:
+    best_metric: float | None,
+) -> tuple[bool | None, float | None]:
     progress_bar = tqdm(
         total=len(actual_eval_batch_sizes_for_this_process),
         desc=f"Generating images on process {accelerator.process_index}",
         disable=not accelerator.is_local_main_process,
     )
-    unet = accelerator.unwrap_model(denoiser_model)
+    denoiser_model = accelerator.unwrap_model(denoiser_model)
     class_embedding = accelerator.unwrap_model(class_embedding)
+    autoencoder_model = accelerator.unwrap_model(autoencoder_model)
 
     if args.use_ema:
-        ema_model.store(unet.parameters())
-        ema_model.copy_to(unet.parameters())
+        ema_model.store(denoiser_model.parameters())
+        ema_model.copy_to(denoiser_model.parameters())
 
     # load the previously downloaded pipeline
     pipeline = CustomStableDiffusionImg2ImgPipeline.from_pretrained(
         full_pipeline_save_path,
         local_files_only=True,  # do not pull from hub during training
         # then override modified components:
-        vae=autoencoder_model.module,
-        unet=unet,
+        vae=autoencoder_model,
+        unet=denoiser_model,
         scheduler=noise_scheduler,
         class_embedding=class_embedding,
     ).to(accelerator.device)
@@ -462,7 +463,9 @@ def generate_samples_and_compute_metrics(
     generator = torch.Generator(device=accelerator.device).manual_seed(5742877512)
 
     # list containing the values of the main metric (defined by user) for each class
-    main_metric_values = []
+    # (only instantiated on main process as metrics are themselves computed on main process only)
+    if accelerator.is_main_process:
+        main_metric_values = []
 
     # Run pipeline in inference (sample random noise and denoise)
     # Generate args.nb_generated_images in batches *per class*
@@ -534,7 +537,7 @@ def generate_samples_and_compute_metrics(
         # before computing metrics
         accelerator.wait_for_everyone()
 
-        # now compute metrics
+        # now compute metrics on main process
         if accelerator.is_main_process:
             logger.info(f"Computing metrics for class {class_name}...")
             metrics_dict = torch_fidelity.calculate_metrics(
@@ -568,13 +571,17 @@ def generate_samples_and_compute_metrics(
         # resync everybody for each class
         accelerator.wait_for_everyone()
 
-        # is it the best model to date?
+    # is it the best model to date?
+    if accelerator.is_main_process:
         best_model_to_date, best_metric = is_it_best_model(
             main_metric_values, best_metric
         )
+    else:
+        best_model_to_date = None
+        best_metric = None
 
     if args.use_ema:
-        ema_model.restore(unet.parameters())
+        ema_model.restore(denoiser_model.parameters())
 
     return best_model_to_date, best_metric
 
