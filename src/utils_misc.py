@@ -21,6 +21,7 @@ from typing import Optional
 
 import datasets
 import diffusers
+import numpy as np
 import torch
 from accelerate.logging import MultiProcessAdapter
 from diffusers.utils.import_utils import is_xformers_available
@@ -69,9 +70,7 @@ def split(l, n, idx):
     return l[idx]
 
 
-def args_checker(
-    args: Namespace, logger: MultiProcessAdapter, nb_training_examples: int
-) -> None:
+def args_checker(args: Namespace, logger: MultiProcessAdapter) -> None:
     assert args.use_pytorch_loader, "Only PyTorch loader is supported for now."
 
     if args.dataset_name is None and args.train_data_dir is None:
@@ -96,23 +95,6 @@ def args_checker(
         logger.warning(
             "Gradient accumulation may (probably) fail as the class embedding is not wrapped inside `accelerate.accumulate` context manager; TODO!"
         )
-
-    if args.debug:
-        logger.warning("\033[1;33m=====> DEBUG FLAG: MODIFYING PASSED ARGS\033[0m\n")
-        args.save_model_epochs = 1
-        args.generate_images_epochs = 1
-        args.nb_generated_images = args.eval_batch_size
-        args.num_training_steps = 10
-        args.num_inference_steps = 5
-        args.checkpoints_total_limit = 1
-        args.num_epochs = 3
-        # 3 checkpoints during the epoch
-        num_update_steps_per_epoch = ceil(
-            nb_training_examples / args.gradient_accumulation_steps
-        )
-        max_train_steps = args.num_epochs * num_update_steps_per_epoch
-        args.checkpointing_steps = max_train_steps // 3
-        args.kid_subset_size = min(1000, args.nb_generated_images)
 
 
 def create_repo_structure(
@@ -211,3 +193,39 @@ def setup_xformers_memory_efficient_attention(
         raise ValueError(
             "xformers is not available. Make sure it is installed correctly"
         )
+
+
+def modify_args_for_debug(
+    logger: MultiProcessAdapter, args: Namespace, train_dataloader
+) -> None:
+    logger.warning("\033[1;33m=====> DEBUG FLAG: MODIFYING PASSED ARGS\033[0m\n")
+    args.save_model_epochs = 1
+    args.generate_images_epochs = 1
+    args.nb_generated_images = args.eval_batch_size
+    args.num_train_timesteps = 10
+    args.num_inference_steps = 5
+    args.checkpoints_total_limit = 1
+    args.num_epochs = 3
+    # 3 checkpoints during the epoch
+    num_update_steps_per_epoch = ceil(
+        len(train_dataloader) / args.gradient_accumulation_steps
+    )
+    max_train_steps = args.num_epochs * num_update_steps_per_epoch
+    args.checkpointing_steps = max_train_steps // 3
+    args.kid_subset_size = min(1000, args.nb_generated_images)
+
+
+def is_it_best_model(
+    main_metric_values: list[float], best_metric: float
+) -> tuple[bool, float]:
+    if np.mean(main_metric_values) < best_metric:
+        best_metric = np.mean(main_metric_values)
+        best_model_to_date = True
+    else:
+        best_model_to_date = False
+
+    return best_model_to_date, best_metric
+
+
+def get_initial_best_metric() -> float:
+    return float("inf")

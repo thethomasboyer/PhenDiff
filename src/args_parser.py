@@ -26,7 +26,7 @@ def parse_args() -> Namespace:
         "--debug",
         default=False,
         action="store_true",
-        help="Run the training script in debug mode, ie with: save_model_epochs=1, generate_images_epochs=1, nb_generated_images=eval_batch_size, num_training_steps=10, num_inference_steps=5, checkpoints_total_limit=1, checkpointing_steps=30, kid_subset_size=min(1000, nb_generated_images)",
+        help="Run the training script in debug mode, ie with: save_model_epochs=1, generate_images_epochs=1, nb_generated_images=eval_batch_size, num_train_timesteps=10, num_inference_steps=5, checkpoints_total_limit=1, checkpointing_steps=30, kid_subset_size=min(1000, nb_generated_images)",
     )
     parser.add_argument(
         "--components_to_train",
@@ -341,7 +341,7 @@ def parse_args() -> Namespace:
         ),
     )
     parser.add_argument(
-        "--num_training_steps",
+        "--num_train_timesteps",
         type=int,
         default=None,
         help="If None will use the value of the pretrained model.",
@@ -351,6 +351,12 @@ def parse_args() -> Namespace:
         type=int,
         default=None,
         help="If None will use the value of the pretrained model.",
+    )
+    parser.add_argument(
+        "--main_metric",
+        type=str,
+        default="frechet_inception_distance",
+        help="The metric to use to decide whether a model is the best to date and hence should be saved, erasing the previous one. The mean over all classes will be used.",
     )
     parser.add_argument(
         "--beta_schedule",

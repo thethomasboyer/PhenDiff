@@ -1,6 +1,6 @@
+import torch
 from diffusers import ConfigMixin, ModelMixin
 from diffusers.configuration_utils import register_to_config
-import torch
 
 
 class CustomEmbedding(ModelMixin, ConfigMixin):

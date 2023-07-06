@@ -36,6 +36,8 @@ from src.utils_dataset import setup_dataset
 from src.utils_misc import (
     args_checker,
     create_repo_structure,
+    get_initial_best_metric,
+    modify_args_for_debug,
     setup_logger,
     setup_xformers_memory_efficient_attention,
 )
@@ -70,7 +72,7 @@ def main(args: Namespace):
     logger.info(f"Logging to project {wandb_project_name}")
     accelerator.init_trackers(
         project_name=wandb_project_name,
-        config=args,
+        config=vars(args),
     )
 
     # Make one log on every process with the configuration for debugging.
@@ -96,7 +98,13 @@ def main(args: Namespace):
 
     # ------------------------- Checks -------------------------
     if accelerator.is_main_process:
-        args_checker(args, logger, len(train_dataloader))
+        args_checker(args, logger)
+
+    # ------------------------- Debug --------------------------
+    if args.debug:
+        modify_args_for_debug(logger, args, train_dataloader)
+        if accelerator.is_main_process:
+            args_checker(args, logger)  # check again after debug modifications
 
     # ------------------- Pretrained Pipeline ------------------
     # Download the full pretrained pipeline.
@@ -132,7 +140,7 @@ def main(args: Namespace):
     # noise scheduler:
     # if relevant args are None then use the "pretrained" values
     noise_scheduler_kwargs = [
-        "num_training_steps",
+        "num_train_timesteps",
         "beta_start",
         "beta_end",
         "beta_schedule",
@@ -214,6 +222,7 @@ def main(args: Namespace):
     if accelerator.is_main_process:
         save_pipeline(
             accelerator=accelerator,
+            autoencoder_model=autoencoder_model,
             denoiser_model=denoiser_model,
             class_embedding=class_embedding,
             args=args,
@@ -224,13 +233,20 @@ def main(args: Namespace):
             epoch=0,
             logger=logger,
             first_save=True,
-            autoencoder_model=autoencoder_model,
         )
     accelerator.wait_for_everyone()
 
     # ------------------------ Optimizer -----------------------
+    params_to_optimize = []
+    if "autoencoder" in args.components_to_train:
+        params_to_optimize += list(autoencoder_model.parameters())
+    if "denoiser" in args.components_to_train:
+        params_to_optimize += list(denoiser_model.parameters())
+    if "class_embedding" in args.components_to_train:
+        params_to_optimize += list(class_embedding.parameters())
+
     optimizer = torch.optim.AdamW(
-        list(denoiser_model.parameters()) + list(class_embedding.parameters()),
+        params_to_optimize,
         lr=args.learning_rate,
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.adam_weight_decay,
@@ -299,7 +315,9 @@ def main(args: Namespace):
     (
         num_update_steps_per_epoch,
         actual_eval_batch_sizes_for_this_process,
-    ) = get_training_setup(args, accelerator, train_dataloader, logger, dataset)
+    ) = get_training_setup(
+        args, accelerator, train_dataloader, logger, dataset, noise_scheduler
+    )
 
     # ----------------- Resume from Checkpoint -----------------
     if args.resume_from_checkpoint:
@@ -308,6 +326,11 @@ def main(args: Namespace):
         )
 
     # ---------------------- Training loop ---------------------
+    best_metric = get_initial_best_metric()
+    # perform all saves until metrics are computed
+    # (given best_metric is properly initialized)
+    best_model_to_date = True
+
     for epoch in range(first_epoch, args.num_epochs):
         # Training epoch
         global_step = perform_training_epoch(
@@ -332,9 +355,10 @@ def main(args: Namespace):
 
         # Generate sample images for visual inspection & metrics computation
         if epoch % args.generate_images_epochs == 0:
-            generate_samples_and_compute_metrics(
+            best_model_to_date, best_metric = generate_samples_and_compute_metrics(
                 args=args,
                 accelerator=accelerator,
+                autoencoder_model=autoencoder_model,
                 denoiser_model=denoiser_model,
                 class_embedding=class_embedding,
                 ema_model=ema_unet,
@@ -347,15 +371,24 @@ def main(args: Namespace):
                 nb_classes=nb_classes,
                 logger=logger,
                 dataset=dataset,
+                best_metric=best_metric,
             )
 
         if (
             accelerator.is_main_process
             and epoch % args.save_model_epochs == 0
             and epoch != 0
+            and best_model_to_date
         ):
+            accelerator.log(
+                {
+                    "best_model_to_date": int(best_model_to_date),
+                },
+                step=global_step,
+            )
             save_pipeline(
                 accelerator=accelerator,
+                autoencoder_model=autoencoder_model,
                 denoiser_model=denoiser_model,
                 class_embedding=class_embedding,
                 args=args,

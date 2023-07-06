@@ -14,6 +14,7 @@
 
 import math
 import os
+from argparse import Namespace
 from math import ceil
 from pathlib import Path
 from shutil import rmtree
@@ -22,8 +23,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch_fidelity
+from accelerate import Accelerator
 from accelerate.logging import MultiProcessAdapter
-from diffusers import AutoencoderKL, UNet2DConditionModel
+from diffusers import AutoencoderKL, DDIMScheduler, UNet2DConditionModel
 from diffusers.training_utils import EMAModel
 from PIL.Image import Image
 from tqdm.auto import tqdm
@@ -34,7 +36,7 @@ from src.custom_pipeline_stable_diffusion_img2img.custom_pipeline_stable_diffusi
     CustomStableDiffusionImg2ImgPipeline,
 )
 
-from .utils_misc import extract_into_tensor, split
+from .utils_misc import extract_into_tensor, is_it_best_model, split
 
 
 def resume_from_checkpoint(
@@ -80,15 +82,19 @@ def resume_from_checkpoint(
 
 
 def get_training_setup(
-    args, accelerator, train_dataloader, logger: MultiProcessAdapter, dataset
+    args,
+    accelerator,
+    train_dataloader,
+    logger: MultiProcessAdapter,
+    dataset,
+    noise_scheduler: DDIMScheduler,
 ):
     """
     Returns
     -------
-    - `Tuple[int, int, List[int]]`
+    - `Tuple[int, List[int]]`
         A tuple containing:
         - the total number of update steps per epoch,
-        - the total number of batches for image generation across all GPUs and *per class*
         - the list of actual evaluation batch sizes *for this process*
     """
     total_batch_size = (
@@ -142,7 +148,7 @@ def get_training_setup(
     logger.info(f"  Learning rate = \033[1m{args.learning_rate}\033[0m")
     logger.info(f"  Num generated images = \033[1m{args.nb_generated_images}\033[0m")
     logger.info(
-        f"  Num diffusion discretization steps = \033[1m{args.num_training_steps}\033[0m"
+        f"  Num diffusion discretization steps = \033[1m{noise_scheduler.config.num_train_timesteps}\033[0m"
     )
     logger.info(
         f"  Num diffusion generation steps = \033[1m{args.num_inference_steps}\033[0m"
@@ -199,9 +205,9 @@ def perform_training_epoch(
             class_labels = batch["class_labels"]
 
         # Convert images to latent space
-        autoencoder_model = accelerator.unwrap_model(autoencoder_model)
-        latents = autoencoder_model.encode(clean_images).latent_dist.sample()
-        latents = latents * autoencoder_model.config.scaling_factor
+        # autoencoder_model = accelerator.unwrap_model(autoencoder_model)
+        latents = autoencoder_model.module.encode(clean_images).latent_dist.sample()
+        latents = latents * autoencoder_model.module.config.scaling_factor
         # TODO: what is this ↑?
 
         # Sample noise that we'll add to the images
@@ -412,6 +418,7 @@ def _syn_training_state(
 def generate_samples_and_compute_metrics(
     args,
     accelerator,
+    autoencoder_model: AutoencoderKL,
     denoiser_model: UNet2DConditionModel,
     class_embedding: CustomEmbedding,
     ema_model,
@@ -424,7 +431,8 @@ def generate_samples_and_compute_metrics(
     nb_classes: int,
     logger: MultiProcessAdapter,
     dataset,
-):
+    best_metric: float,
+) -> tuple[bool, float]:
     progress_bar = tqdm(
         total=len(actual_eval_batch_sizes_for_this_process),
         desc=f"Generating images on process {accelerator.process_index}",
@@ -442,7 +450,7 @@ def generate_samples_and_compute_metrics(
         full_pipeline_save_path,
         local_files_only=True,  # do not pull from hub during training
         # then override modified components:
-        # vae=autoencoder_model,
+        vae=autoencoder_model.module,
         unet=unet,
         scheduler=noise_scheduler,
         class_embedding=class_embedding,
@@ -451,6 +459,9 @@ def generate_samples_and_compute_metrics(
 
     # set manual seed in order to observe the outputs produced from the same Gaussian noise
     generator = torch.Generator(device=accelerator.device).manual_seed(5742877512)
+
+    # list containing the values of the main metric (defined by user) for each class
+    main_metric_values = []
 
     # Run pipeline in inference (sample random noise and denoise)
     # Generate args.nb_generated_images in batches *per class*
@@ -547,6 +558,8 @@ def generate_samples_and_compute_metrics(
                     },
                     step=global_step,
                 )
+                if metric_name == args.main_metric:
+                    main_metric_values.append(metric_value)
 
             # clear the tmp folder for this class
             rmtree(image_generation_tmp_save_folder)
@@ -554,23 +567,30 @@ def generate_samples_and_compute_metrics(
         # resync everybody for each class
         accelerator.wait_for_everyone()
 
+        # is it the best model to date?
+        best_model_to_date, best_metric = is_it_best_model(
+            main_metric_values, best_metric
+        )
+
     if args.use_ema:
         ema_model.restore(unet.parameters())
 
+    return best_model_to_date, best_metric
+
 
 def save_pipeline(
-    accelerator,
+    accelerator: Accelerator,
+    autoencoder_model: AutoencoderKL,
     denoiser_model: UNet2DConditionModel,
     class_embedding: CustomEmbedding,
-    args,
-    ema_model,
-    noise_scheduler,
+    args: Namespace,
+    ema_model: EMAModel | None,
+    noise_scheduler: DDIMScheduler,
     full_pipeline_save_folder: Path,
     repo,
-    epoch,
+    epoch: int,
     logger: MultiProcessAdapter,
-    first_save: bool | None = None,
-    autoencoder_model: AutoencoderKL | None = None,
+    first_save: bool = False,
 ):
     if (
         first_save
@@ -589,27 +609,12 @@ def save_pipeline(
         ema_model.store(denoiser_model.parameters())
         ema_model.copy_to(denoiser_model.parameters())
 
-    if not first_save:
-        # load the previously saved pipeline during training
-        # (the vae is frozen)
-        pipeline = CustomStableDiffusionImg2ImgPipeline.from_pretrained(
-            full_pipeline_save_folder,
-            unet=denoiser_model,
-            scheduler=noise_scheduler,
-            class_embedding=class_embedding,
-            local_files_only=True,  # do not pull from hub during training
-        )
-    else:
-        assert (
-            autoencoder_model is not None
-        ), "Need to pass autoencoder_model for first save"
-        # create the first save of the pipeline
-        pipeline = CustomStableDiffusionImg2ImgPipeline(
-            vae=autoencoder_model,
-            unet=denoiser_model,
-            scheduler=noise_scheduler,
-            class_embedding=class_embedding,
-        )
+    pipeline = CustomStableDiffusionImg2ImgPipeline(
+        vae=autoencoder_model.module,
+        unet=denoiser_model,
+        scheduler=noise_scheduler,
+        class_embedding=class_embedding,
+    )
 
     # save to full_pipeline_save_folder (≠ initial_pipeline_save_path...)
     logger.info(f"Saving full pipeline to {full_pipeline_save_folder} at epoch {epoch}")
