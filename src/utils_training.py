@@ -28,6 +28,7 @@ from accelerate.logging import MultiProcessAdapter
 from diffusers import AutoencoderKL, DDIMScheduler, UNet2DConditionModel
 from diffusers.training_utils import EMAModel
 from PIL.Image import Image
+from torch.nn.parallel import DistributedDataParallel
 from tqdm.auto import tqdm
 
 import wandb
@@ -609,8 +610,12 @@ def save_pipeline(
         ema_model.store(denoiser_model.parameters())
         ema_model.copy_to(denoiser_model.parameters())
 
+    if isinstance(autoencoder_model, DistributedDataParallel):
+        # for some reason .save_pretrained does not unwrap the vae?
+        autoencoder_model = autoencoder_model.module
+
     pipeline = CustomStableDiffusionImg2ImgPipeline(
-        vae=autoencoder_model.module,
+        vae=autoencoder_model,
         unet=denoiser_model,
         scheduler=noise_scheduler,
         class_embedding=class_embedding,

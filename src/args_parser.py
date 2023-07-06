@@ -26,7 +26,7 @@ def parse_args() -> Namespace:
         "--debug",
         default=False,
         action="store_true",
-        help="Run the training script in debug mode, ie with: save_model_epochs=1, generate_images_epochs=1, nb_generated_images=eval_batch_size, num_train_timesteps=10, num_inference_steps=5, checkpoints_total_limit=1, checkpointing_steps=30, kid_subset_size=min(1000, nb_generated_images)",
+        help="Run the training script in debug mode, ie with: save_model_epochs=1, eval_save_model_every_epochs=1, nb_generated_images=eval_batch_size, num_train_timesteps=10, num_inference_steps=5, checkpoints_total_limit=1, checkpointing_steps=30, kid_subset_size=min(1000, nb_generated_images)",
     )
     parser.add_argument(
         "--components_to_train",
@@ -149,10 +149,10 @@ def parse_args() -> Namespace:
     )
     parser.add_argument("--num_epochs", type=int, required=True)
     parser.add_argument(
-        "--generate_images_epochs",
+        "--eval_save_model_every_epochs",
         type=int,
         required=True,
-        help="How often to save images during training.",
+        help="How often to evaluate and save (if --main_metric is the best recorded to date) the model during training.",
     )
     parser.add_argument("--compute_fid", action="store_true", default=True)
     parser.add_argument("--compute_isc", action="store_true", default=False)

@@ -200,7 +200,7 @@ def modify_args_for_debug(
 ) -> None:
     logger.warning("\033[1;33m=====> DEBUG FLAG: MODIFYING PASSED ARGS\033[0m\n")
     args.save_model_epochs = 1
-    args.generate_images_epochs = 1
+    args.eval_save_model_every_epochs = 1
     args.nb_generated_images = args.eval_batch_size
     args.num_train_timesteps = 10
     args.num_inference_steps = 5

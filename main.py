@@ -354,7 +354,7 @@ def main(args: Namespace):
         )
 
         # Generate sample images for visual inspection & metrics computation
-        if epoch % args.generate_images_epochs == 0:
+        if epoch % args.eval_save_model_every_epochs == 0:
             best_model_to_date, best_metric = generate_samples_and_compute_metrics(
                 args=args,
                 accelerator=accelerator,
@@ -373,32 +373,28 @@ def main(args: Namespace):
                 dataset=dataset,
                 best_metric=best_metric,
             )
-
-        if (
-            accelerator.is_main_process
-            and epoch % args.save_model_epochs == 0
-            and epoch != 0
-            and best_model_to_date
-        ):
+            # log best model indicator
             accelerator.log(
                 {
                     "best_model_to_date": int(best_model_to_date),
                 },
                 step=global_step,
             )
-            save_pipeline(
-                accelerator=accelerator,
-                autoencoder_model=autoencoder_model,
-                denoiser_model=denoiser_model,
-                class_embedding=class_embedding,
-                args=args,
-                ema_model=ema_unet,
-                noise_scheduler=noise_scheduler,
-                full_pipeline_save_folder=full_pipeline_save_folder,
-                repo=repo,
-                epoch=epoch,
-                logger=logger,
-            )
+            # save model if best to date
+            if accelerator.is_main_process and epoch != 0 and best_model_to_date:
+                save_pipeline(
+                    accelerator=accelerator,
+                    autoencoder_model=autoencoder_model,
+                    denoiser_model=denoiser_model,
+                    class_embedding=class_embedding,
+                    args=args,
+                    ema_model=ema_unet,
+                    noise_scheduler=noise_scheduler,
+                    full_pipeline_save_folder=full_pipeline_save_folder,
+                    repo=repo,
+                    epoch=epoch,
+                    logger=logger,
+                )
 
         # do not start new epoch before generation & pipeline saving is done
         accelerator.wait_for_everyone()
