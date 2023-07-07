@@ -166,10 +166,10 @@ def perform_training_epoch(
     denoiser_model: UNet2DConditionModel,
     autoencoder_model: AutoencoderKL,
     num_update_steps_per_epoch: int,
-    accelerator,
+    accelerator: Accelerator,
     epoch: int,
     train_dataloader,
-    args,
+    args: Namespace,
     first_epoch: int,
     resume_step: int,
     noise_scheduler,
@@ -181,9 +181,11 @@ def perform_training_epoch(
     logger: MultiProcessAdapter,
     class_embedding: CustomEmbedding,
     do_uncond_pass_across_all_procs: torch.BoolTensor,
+    params_to_clip: list,
 ) -> int:
-    # set model to train mode
+    # set models to train mode
     denoiser_model.train()
+    autoencoder_model.train()
 
     # give me a pretty progress bar 🤩
     progress_bar = tqdm(
@@ -208,9 +210,8 @@ def perform_training_epoch(
             class_labels = batch["class_labels"]
 
         # Convert images to latent space
-        # autoencoder_model = accelerator.unwrap_model(autoencoder_model)
-        latents = autoencoder_model.module.encode(clean_images).latent_dist.sample()
-        latents = latents * autoencoder_model.module.config.scaling_factor
+        latents = autoencoder_model.encode(clean_images).latent_dist.sample()
+        latents = latents * autoencoder_model.config.scaling_factor
         # TODO: what is this ↑?
 
         # Sample noise that we'll add to the images
@@ -231,24 +232,25 @@ def perform_training_epoch(
         # Unconditional pass for CLF guidance training
         do_unconditional_pass: bool = do_uncond_pass_across_all_procs[step].item()
 
-        with accelerator.accumulate(denoiser_model):
-            loss_value = _forward_backward_pass(
-                args=args,
-                accelerator=accelerator,
-                global_step=global_step,
-                denoiser_model=denoiser_model,
-                noisy_images=noisy_latents,
-                timesteps=timesteps,
-                class_labels=class_labels,
-                noise=noise,
-                noise_scheduler=noise_scheduler,
-                clean_images=latents,
-                optimizer=optimizer,
-                lr_scheduler=lr_scheduler,
-                class_embedding=class_embedding,
-                do_unconditional_pass=do_unconditional_pass,
-                logger=logger,
-            )
+        # with accelerator.accumulate(denoiser_model): # TODO: fix grad accumulation for multiple models
+        loss_value = _forward_backward_pass(
+            args=args,
+            accelerator=accelerator,
+            global_step=global_step,
+            denoiser_model=denoiser_model,
+            noisy_images=noisy_latents,
+            timesteps=timesteps,
+            class_labels=class_labels,
+            noise=noise,
+            noise_scheduler=noise_scheduler,
+            clean_images=latents,
+            optimizer=optimizer,
+            lr_scheduler=lr_scheduler,
+            class_embedding=class_embedding,
+            do_unconditional_pass=do_unconditional_pass,
+            logger=logger,
+            params_to_clip=params_to_clip,
+        )
 
         # Checks if the accelerator has performed an optimization step behind the scenes
         if accelerator.sync_gradients:
@@ -294,21 +296,22 @@ def perform_training_epoch(
 
 
 def _forward_backward_pass(
-    args,
-    accelerator,
-    global_step,
+    args: Namespace,
+    accelerator: Accelerator,
+    global_step: int,
     denoiser_model: UNet2DConditionModel,
     noisy_images,
     timesteps,
     class_labels: torch.Tensor,
     noise,
-    noise_scheduler,
+    noise_scheduler: DDIMScheduler,
     clean_images,
     optimizer,
     lr_scheduler,
     class_embedding: CustomEmbedding,
     do_unconditional_pass: bool,
     logger: MultiProcessAdapter,
+    params_to_clip: list,
 ) -> float:
     # classifier-free guidance: randomly discard conditioning to train unconditionally
     accelerator.log(
@@ -365,9 +368,6 @@ def _forward_backward_pass(
     accelerator.backward(loss)
 
     if accelerator.sync_gradients:
-        params_to_clip = list(denoiser_model.parameters()) + list(
-            class_embedding.parameters()
-        )
         gard_norm = accelerator.clip_grad_norm_(params_to_clip, 1.0)
         accelerator.log({"gradient norm": gard_norm}, step=global_step)
         if gard_norm.isnan().any() and accelerator.is_main_process:
@@ -571,7 +571,7 @@ def _generate_save_images_for_this_class(
 
     # loop over eval batches for this process
     for batch_idx, actual_bs in enumerate(actual_eval_batch_sizes_for_this_process):
-        images: np.ndarray = pipeline(  # pyright: ignore reportGeneralTypeIssues
+        images, latents = pipeline(  # pyright: ignore reportGeneralTypeIssues
             image=None,  # start generation from pure Gaussian noise
             latent_shape=(actual_bs, 4, 16, 16),  # TODO: parametrize
             class_labels=torch.tensor(
@@ -581,7 +581,7 @@ def _generate_save_images_for_this_class(
             num_inference_steps=args.num_inference_steps,
             guidance_scale=args.guidance_factor,
             generator=generator,
-            output_type="np",
+            output_type="np+latent",
             device=accelerator.device,
         )
 
@@ -600,9 +600,11 @@ def _generate_save_images_for_this_class(
                 )
             )
 
-        # denormalize the images and save to logger if first batch
+        # denormalize the images/latents and save to logger if first batch
         # (first batch of main process only to prevent "logger overflow")
+        # (and actualy limit to 50 images/latents maximum)
         if batch_idx == 0 and accelerator.is_main_process:
+            # log images
             images_processed = (images * 255).round().astype("uint8")
             accelerator.log(
                 {
@@ -610,6 +612,25 @@ def _generate_save_images_for_this_class(
                         wandb.Image(img) for img in images_processed[:50]
                     ],
                     "epoch": epoch,
+                },
+                step=global_step,
+            )
+            # log latents
+            assert latents.shape == (actual_bs, 4, 16, 16)  # hardcoded above
+            latents_processed = latents.mean(
+                dim=1, keepdim=True
+            )  # mean over the channels
+            latents_processed -= latents_processed.amin(
+                dim=(2, 3), keepdim=True
+            )  # min-max norm
+            latents_processed /= latents_processed.amax(dim=(2, 3), keepdim=True)
+            latents_processed = latents_processed.cpu().numpy()
+            latents_processed = (latents_processed * 255).round().astype("uint8")
+            accelerator.log(
+                {
+                    f"generated_latents/{class_name}": [
+                        wandb.Image(lat) for lat in latents_processed[:50]
+                    ],
                 },
                 step=global_step,
             )
@@ -683,16 +704,13 @@ def save_pipeline(
 
     denoiser_model = accelerator.unwrap_model(denoiser_model)
     class_embedding = accelerator.unwrap_model(class_embedding)
+    autoencoder_model = accelerator.unwrap_model(autoencoder_model)
 
     if args.use_ema:
         ema_denoiser.store(denoiser_model.parameters())
         ema_denoiser.copy_to(denoiser_model.parameters())
         ema_autoencoder.store(autoencoder_model.parameters())
         ema_autoencoder.copy_to(autoencoder_model.parameters())
-
-    if isinstance(autoencoder_model, DistributedDataParallel):
-        # for some reason .save_pretrained does not unwrap the vae?
-        autoencoder_model = autoencoder_model.module
 
     pipeline = CustomStableDiffusionImg2ImgPipeline(
         vae=autoencoder_model,

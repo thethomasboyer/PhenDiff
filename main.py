@@ -349,6 +349,7 @@ def main(args: Namespace):
             logger=logger,
             class_embedding=class_embedding,
             do_uncond_pass_across_all_procs=do_uncond_pass_across_all_procs,
+            params_to_clip=params_to_optimize,
         )
 
         # Generate sample images for visual inspection & metrics computation

@@ -459,62 +459,95 @@ class CustomStableDiffusionImg2ImgPipeline(
         eta: Optional[float] = 0.0,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         class_labels_embeds: Optional[torch.FloatTensor] = None,
-        output_type: Optional[str] = "pil",
+        output_type: str = "pil",
         callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
         callback_steps: int = 1,
         cross_attention_kwargs: Optional[Dict[str, Any]] = None,
         device: Optional[Union[torch.device, str]] = None,
-    ) -> Union[List[PIL.Image.Image], np.ndarray]:
+    ) -> (
+        list[PIL.Image.Image]
+        | np.ndarray
+        | torch.FloatTensor
+        | tuple[
+            list[PIL.Image.Image] | np.ndarray | torch.FloatTensor, torch.FloatTensor
+        ]
+    ):
         r"""
         Generation method. Returns a list of PIL images or a numpy array corresponding to the generated images from the
         given initial `image`. If `image` is `None` the generation happens from scratch (i.e. from a pure random Gaussian noise latent),
         corresponding to conditional image generation instead of img2img translation.
 
         Args:
-            image (`torch.FloatTensor`, `PIL.Image.Image`, `List[PIL.Image.Image]`, `np.ndarray`, or `None`):
+            - image (`torch.FloatTensor`, `PIL.Image.Image`, `List[PIL.Image.Image]`, `np.ndarray`, or `None`)
+
                 `Image`, or tensor representing an image batch, that will be used as the starting point for the
                 process. Can also accept image latents as `image`: if passing latents directly, it will not be encoded
                 again. Can also accept `None`, in which case the generation will start from scratch.
-            latent_shape (`Tuple[int, ...]`, *optional*):
+
+            - latent_shape (`Tuple[int, ...]`, *optional*)
+
                 The shape of the latent vector to be generated if `image` is `None`. Ignored otherwise.
-            class_labels (`int` or `List[int]` or `torch.Tensor`, *optional*):
+
+            - class_labels (`int` or `List[int]` or `torch.Tensor`, *optional*)
+
                 The class labels to guide the image generation. If not defined, one has to pass `class_labels_embeds`.
                 instead.
-            strength (`float`, *optional*, defaults to 0.8):
+
+            - strength (`float`, *optional*, defaults to 0.8)
+
                 Conceptually, indicates how much to transform the reference `image`. Must be between 0 and 1. `image`
                 will be used as a starting point, adding more noise to it the larger the `strength`. The number of
                 denoising steps depends on the amount of noise initially added. When `strength` is 1, added noise will
                 be maximum and the denoising process will run for the full number of iterations specified in
                 `num_inference_steps`. A value of 1, therefore, essentially ignores `image`. If `image` is `None`, strength
                 should be set to 1 (and not noise will actually be added to the generated, allready pure Gaussian noise).
-            num_inference_steps (`int`, *optional*, defaults to 50):
+
+            - num_inference_steps (`int`, *optional*, defaults to 50)
+
                 The number of denoising steps. More denoising steps usually lead to a higher quality image at the
                 expense of slower inference. This parameter will be modulated by `strength`.
-            guidance_scale (`float`, *optional*, defaults to 7.5):
+
+            - guidance_scale (`float`, *optional*, defaults to 7.5)
+
                 Guidance scale as defined in [Classifier-Free Diffusion Guidance](https://arxiv.org/abs/2207.12598).
                 `guidance_scale` is defined as `w` of equation 2. of [Imagen
                 Paper](https://arxiv.org/pdf/2205.11487.pdf). Guidance scale is enabled by setting `guidance_scale >
                 1`. Higher guidance scale encourages to generate images that are closely linked to the class labels,
                 usually at the expense of lower image quality.
-            eta (`float`, *optional*, defaults to 0.0):
+
+            - eta (`float`, *optional*, defaults to 0.0)
+
                 Corresponds to parameter eta (η) in the DDIM paper: https://arxiv.org/abs/2010.02502. Only applies to
                 [`schedulers.DDIMScheduler`], will be ignored for others.
-            generator (`torch.Generator`, *optional*):
+
+            - generator (`torch.Generator`, *optional*)
+
                 One or a list of [torch generator(s)](https://pytorch.org/docs/stable/generated/torch.Generator.html)
                 to make generation deterministic.
-            class_labels_embeds (`torch.FloatTensor`, *optional*):
+
+            - class_labels_embeds (`torch.FloatTensor`, *optional*)
+
                 Pre-generated class embeddings. Can be used to easily tweak class inputs, *e.g.* class weighting. If not
                 provided, class embeddings will be generated from `class_labels` input argument.
-            output_type (`str`, *optional*, defaults to `"pil"`):
-                The output format of the generate image. Choose between 'pil' for
-                [PIL](https://pillow.readthedocs.io/en/stable/): `PIL.Image.Image` or 'np' for `np.array`.
-            callback (`Callable`, *optional*):
+
+            - output_type (`str`, defaults to `"pil"`)
+
+                The output format of the generate image. Choose between 'pil' for `PIL.Image.Image`, 'np' for `np.array`,
+                `pt` for `torch.FloatTensor`, or `latent` for the undecoded latents (in `torch.FloatTensor` format).
+                Use `{pil,np,pt}+latent` to return both the decoded image and the latent.
+
+            - callback (`Callable`, *optional*)
+
                 A function that will be called every `callback_steps` steps during inference. The function will be
                 called with the following arguments: `callback(step: int, timestep: int, latents: torch.FloatTensor)`.
-            callback_steps (`int`, *optional*, defaults to 1):
+
+            - callback_steps (`int`, *optional*, defaults to 1)
+
                 The frequency at which the `callback` function will be called. If not specified, the callback will be
                 called at every step.
-            cross_attention_kwargs (`dict`, *optional*):
+
+            - cross_attention_kwargs (`dict`, *optional*)
+
                 A kwargs dictionary that if specified is passed along to the `AttentionProcessor` as defined under
                 `self.processor` in
                 [diffusers.cross_attention](https://github.com/huggingface/diffusers/blob/main/src/diffusers/models/cross_attention.py).
@@ -659,11 +692,16 @@ class CustomStableDiffusionImg2ImgPipeline(
         do_denormalize = [True] * image.shape[0]
 
         image = self.image_processor.postprocess(
-            image, output_type=output_type, do_denormalize=do_denormalize
+            image,
+            output_type=output_type.rstrip("+latent"),
+            do_denormalize=do_denormalize,
         )
 
         # Offload last model to CPU
         if hasattr(self, "final_offload_hook") and self.final_offload_hook is not None:
             self.final_offload_hook.offload()
+
+        if "+latent" in output_type:
+            return image, latents
 
         return image
