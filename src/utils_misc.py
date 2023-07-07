@@ -78,9 +78,6 @@ def args_checker(args: Namespace, logger: MultiProcessAdapter) -> None:
         msg += "or a train data directory."
         raise ValueError(msg)
 
-    if args.prediction_type == "velocity":
-        raise NotImplementedError("Velocity prediction is not implemented yet; TODO!")
-
     if args.guidance_factor <= 1:
         logger.warning(
             "The guidance factor is <= 1: classifier free guidance will not be performed"
@@ -90,6 +87,9 @@ def args_checker(args: Namespace, logger: MultiProcessAdapter) -> None:
         raise ValueError(
             f"'nb_generated_images' (={args.nb_generated_images}) must be >= 'kid_subset_size' (={args.kid_subset_size})"
         )
+
+    if args.gradient_accumulation_steps != 1:
+        raise NotImplementedError("Gradient accumulation is not yet supported; TODO!")
 
     if args.gradient_accumulation_steps > 1:
         logger.warning(
@@ -205,7 +205,7 @@ def modify_args_for_debug(
     args.num_inference_steps = 5
     args.checkpoints_total_limit = 1
     args.num_epochs = 3
-    # 3 checkpoints during the epoch
+    # 3 checkpoints during the debug training
     num_update_steps_per_epoch = ceil(
         len(train_dataloader) / args.gradient_accumulation_steps
     )

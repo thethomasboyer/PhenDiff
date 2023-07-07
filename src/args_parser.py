@@ -201,6 +201,9 @@ def parse_args() -> Namespace:
     #     type=float,
     #     help="The starting point of the denoising schedule (between 0 and 1).",
     # )
+    # TODO: allow gradient accumulation back (deactivated for now because no multiple models can be passed to accumulate();
+    # see https://github.com/huggingface/accelerate/issues/668 for solutions; HF team appears to be working on it 🥰;
+    # an easy fix would be to wrap everything inside a super model)
     parser.add_argument(
         "--gradient_accumulation_steps",
         type=int,
