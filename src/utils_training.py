@@ -187,6 +187,9 @@ def perform_training_epoch(
     denoiser_model.train()
     autoencoder_model.train()
 
+    # unwrap the autoencoder before calling it
+    autoencoder_model = accelerator.unwrap_model(autoencoder_model)
+
     # give me a pretty progress bar 🤩
     progress_bar = tqdm(
         total=num_update_steps_per_epoch,

@@ -96,6 +96,12 @@ def args_checker(args: Namespace, logger: MultiProcessAdapter) -> None:
             "Gradient accumulation may (probably) fail as the class embedding is not wrapped inside `accelerate.accumulate` context manager; TODO!"
         )
 
+    for c in args.components_to_train:
+        if c not in ["denoiser", "class_embedding", "autoencoder"]:
+            raise ValueError(
+                f"Unknown component '{c}' in 'components_to_train' argument."
+            )
+
 
 def create_repo_structure(
     args: Namespace, accelerator, logger: MultiProcessAdapter
