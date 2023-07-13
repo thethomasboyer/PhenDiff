@@ -24,6 +24,7 @@ import diffusers
 import numpy as np
 import torch
 from accelerate.logging import MultiProcessAdapter
+from diffusers import DDIMScheduler
 from diffusers.utils.import_utils import is_xformers_available
 from huggingface_hub import HfFolder, whoami
 from packaging import version
@@ -99,8 +100,40 @@ def args_checker(args: Namespace, logger: MultiProcessAdapter) -> None:
     for c in args.components_to_train:
         if c not in ["denoiser", "class_embedding", "autoencoder"]:
             raise ValueError(
-                f"Unknown component '{c}' in 'components_to_train' argument."
+                f"Unknown component '{c}' in 'components_to_train' argument. Should be in ['denoiser', 'class_embedding', 'autoencoder']"
             )
+
+    if args.model_type == "DDIM":
+        assert (
+            "autoencoder" not in args.components_to_train
+        ), "DDIM does not have any autoencoder"
+        assert (
+            "class_embedding" not in args.components_to_train
+        ), "DDIM does not have a custom class embedding"
+
+    if (
+        args.pretrained_model_name_or_path is not None
+        and args.denoiser_config_path is not None
+    ):
+        raise ValueError(
+            "Cannot set both pretrained_model_name_or_path and denoiser_config_path"
+        )
+
+    # Either give a pretrained model, or a config for both denoiser and scheduler
+    # TODO: adapt this to support LDM *not* pulled from a pretrained model
+    assert (
+        args.pretrained_model_name_or_path is None
+        and (
+            args.noise_scheduler_config_path is not None
+            and args.denoiser_config_path is not None
+        )
+    ) or (
+        args.pretrained_model_name_or_path is not None
+        and (
+            args.noise_scheduler_config_path is None
+            and args.denoiser_config_path is None
+        )
+    )
 
 
 def create_repo_structure(
@@ -152,9 +185,9 @@ def create_repo_structure(
         chckpts = list(chckpt_save_path.iterdir())
         if not args.resume_from_checkpoint and len(chckpts) > 0:
             msg = (
-                "\033[1;33m=====> THE CHECKPOINTING FOLDER IS NOT EMPTY BUT THE CURRENT RUN WILL NOT RESUME FROM A CHECKPOINT. "
-                "THIS MAY RESULT IN ERASING THE JUST-SAVED CHECKPOINTS DURING ALL TRAINING "
-                "UNTIL IT REACHES THE LAST CHECKPOINTING STEP PRESENT IN THE FOLDER.\033[0m\n"
+                "\033[1;33mTHE CHECKPOINTING FOLDER IS NOT EMPTY BUT THE CURRENT RUN WILL NOT RESUME FROM A CHECKPOINT. "
+                "THIS WILL RESULT IN ERASING THE JUST-SAVED CHECKPOINTS DURING ALL TRAINING "
+                "UNTIL IT REACHES THE LAST CHECKPOINTING STEP ALREADY PRESENT IN THE FOLDER.\033[0m\n"
             )
             logger.warning(msg)
 
@@ -204,7 +237,7 @@ def setup_xformers_memory_efficient_attention(
 def modify_args_for_debug(
     logger: MultiProcessAdapter, args: Namespace, train_dataloader
 ) -> None:
-    logger.warning("\033[1;33m=====> DEBUG FLAG: MODIFYING PASSED ARGS\033[0m\n")
+    logger.warning("\033[1;33mDEBUG FLAG: MODIFYING PASSED ARGS\033[0m")
     args.eval_save_model_every_epochs = 1
     args.nb_generated_images = args.eval_batch_size
     args.num_train_timesteps = 10
@@ -238,3 +271,182 @@ def is_it_best_model(
 
 def get_initial_best_metric() -> float:
     return float("inf")
+
+
+def get_HF_component_names(components_to_train: list[str]) -> list[str]:
+    """The names of the components are badly chosen (the vae is a unet...
+    scheduler? you mean learning rate scheduler?...) so we *need* to use our own
+    –and then re-use the original ones 🙃
+    """
+    components_to_train_transcribed = []
+
+    if "denoiser" in components_to_train:
+        components_to_train_transcribed.append("unet")
+    if "autoencoder" in components_to_train:
+        components_to_train_transcribed.append("vae")
+    if "class_embedding" in components_to_train:
+        components_to_train_transcribed.append("class_embedding")
+
+    assert len(components_to_train_transcribed) == len(components_to_train)
+
+    return components_to_train_transcribed
+
+
+# From https://stackoverflow.com/a/56877039/12723904
+# The 'Table of Content' [TOC] style print function
+def _format_info(key: str, val: str, space_char: str = "_", val_loc: int = 78) -> str:
+    # key:        This would be the TOC item equivalent
+    # val:        This would be the TOC page number equivalent
+    # space_char: This is the spacing character between key and val (often a dot for a TOC), must be >= 5
+    # val_loc:    This is the location in the string where the first character of val would be located
+
+    val_loc = max(5, val_loc)
+
+    if val_loc <= len(key):
+        # if val_loc is within the space of key, truncate key and
+        cut_str = "{:." + str(val_loc - 4) + "}"
+        key = cut_str.format(key) + "..." + space_char
+
+    space_str = "{:" + space_char + ">" + str(val_loc - len(key) + len(str(val))) + "}"
+    return key + space_str.format("\033[1m" + str(val) + "\033[0m")
+
+
+def print_info_at_run_start(
+    logger: MultiProcessAdapter,
+    args: Namespace,
+    pipeline_components: list[str],
+    components_to_train_transcribed: list[str],
+    noise_scheduler: DDIMScheduler,
+    tot_nb_samples: int,
+    total_batch_size: int,
+    max_train_steps: int,
+):
+    logger.info("\033[1m" + "*" * 46 + " Running training " + "*" * 46 + "\033[0m")
+    logger.info(
+        _format_info(
+            "Model",
+            args.model_type,
+        )
+    )
+    logger.info(
+        _format_info(
+            "Output dir",
+            args.output_dir,
+        )
+    )
+    logger.info(_format_info("Pretrained model", args.pretrained_model_name_or_path))
+    logger.info(
+        _format_info(
+            "Components to train",
+            str(args.components_to_train),
+        )
+    )
+    logger.info(
+        _format_info(
+            "Components kept frozen",
+            str(set(pipeline_components) - set(components_to_train_transcribed)),
+        )
+    )
+    logger.info(
+        _format_info(
+            "Num diffusion discretization steps",
+            noise_scheduler.config.num_train_timesteps,
+        )
+    )
+    logger.info(
+        _format_info(
+            "Num diffusion generation steps",
+            args.num_inference_steps,
+        )
+    )
+    logger.info(
+        _format_info(
+            "Guidance Factor",
+            args.guidance_factor,
+        )
+    )
+    logger.info(
+        _format_info(
+            "Probability of unconditional pass",
+            args.proba_uncond,
+        )
+    )
+    logger.info(
+        _format_info(
+            "Prediction type",
+            noise_scheduler.config.prediction_type,
+        )
+    )
+    logger.info(
+        _format_info(
+            "Learning rate",
+            args.learning_rate,
+        )
+    )
+    logger.info(
+        _format_info(
+            "Num examples",
+            tot_nb_samples,
+        )
+    )
+    logger.info(
+        _format_info(
+            "Num epochs",
+            args.num_epochs,
+        )
+    )
+    logger.info(
+        _format_info(
+            "Instantaneous batch size per device",
+            args.train_batch_size,
+        )
+    )
+    logger.info(
+        _format_info(
+            "Total train batch size (w. parallel, distributed & accumulation)",
+            total_batch_size,
+        )
+    )
+    logger.info(
+        _format_info(
+            "Gradient Accumulation steps",
+            args.gradient_accumulation_steps,
+        )
+    )
+    logger.info(
+        _format_info(
+            "Use EMA",
+            args.use_ema,
+        )
+    )
+    logger.info(
+        _format_info(
+            "Total optimization steps",
+            max_train_steps,
+        )
+    )
+    logger.info(
+        _format_info(
+            "Num steps between checkpoints",
+            args.checkpointing_steps,
+        )
+    )
+    tot_nb_chckpts = max_train_steps // args.checkpointing_steps
+    logger.info(
+        _format_info(
+            "Num checkpoints during training",
+            tot_nb_chckpts,
+        )
+    )
+    logger.info(
+        _format_info(
+            "Num epochs between model evaluation",
+            args.eval_save_model_every_epochs,
+        )
+    )
+    logger.info(
+        _format_info(
+            "Num generated images",
+            args.nb_generated_images,
+        )
+    )

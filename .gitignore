@@ -8,3 +8,4 @@ data/
 accelerate_configs
 .ipynb_checkpoints/
 .initial_pipeline_save
+SD_playground.ipynb

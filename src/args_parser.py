@@ -29,6 +29,9 @@ def parse_args() -> Namespace:
         help="Run the training script in debug mode, ie with: eval_save_model_every_epochs=1, nb_generated_images=eval_batch_size, num_train_timesteps=10, num_inference_steps=5, checkpoints_total_limit=1, checkpointing_steps=30, kid_subset_size=min(1000, nb_generated_images)",
     )
     parser.add_argument(
+        "--model_type", type=str, choices=["DDIM", "StableDiffusion"], required=True
+    )
+    parser.add_argument(
         "--components_to_train",
         nargs="+",
         type=str,
@@ -39,7 +42,6 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "--dataset_name",
         type=str,
-        default=None,
         help=(
             "The name of the Dataset (from the HuggingFace hub) to train on (could be your own, possibly private,"
             " dataset). It can also be a path pointing to a local copy of a dataset in your filesystem,"
@@ -49,7 +51,6 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "--dataset_config_name",
         type=str,
-        default=None,
         help="The config of the Dataset, leave as None if there's only one config.",
     )
     parser.add_argument(
@@ -61,8 +62,17 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "--pretrained_model_name_or_path",
         type=str,
-        required=True,
-        help="The name of or path to the pretrained pipeline.",
+        help="The name of or path to the pretrained pipeline. Must not be set if denoiser_config_path or noise_scheduler_config_path is set.",
+    )
+    parser.add_argument(
+        "--denoiser_config_path",
+        type=str,
+        help="The path to the denoiser config. Must not be set if pretrained_model_name_or_path is set.",
+    )
+    parser.add_argument(
+        "--noise_scheduler_config_path",
+        type=str,
+        help="The path to the noise scheduler config. Must not be set if pretrained_model_name_or_path is set.",
     )
     parser.add_argument(
         "--learn_denoiser_from_scratch",
@@ -73,12 +83,10 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "--revision",
         type=str,
-        default=None,
     )
     parser.add_argument(
         "--train_data_dir",
         type=str,
-        default=None,
         help=(
             "A folder containing the training data. Folder contents must follow the structure described in"
             " https://huggingface.co/docs/datasets/image_dataset#imagefolder. In particular, a `metadata.jsonl` file"
@@ -100,7 +108,6 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "--cache_dir",
         type=str,
-        default=None,
         help="The directory where the downloaded models and datasets will be stored.",
     )
     parser.add_argument(
@@ -157,7 +164,6 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "--precise_first_n_epochs",
         type=int,
-        default=None,
         help="Whether to evaluate the model every epoch during the first n epochs. Ignored if None.",
     )
     parser.add_argument("--compute_fid", action="store_true", default=True)
@@ -288,13 +294,11 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "--hub_token",
         type=str,
-        default=None,
         help="The token to use to push to the Model Hub.",
     )
     parser.add_argument(
         "--hub_model_id",
         type=str,
-        default=None,
         help="The name of the repository to keep in sync with the local `output_dir`.",
     )
     parser.add_argument(
@@ -329,7 +333,6 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "--prediction_type",
         type=str,
-        default=None,
         choices=["epsilon", "sample", "velocity"],
         help=(
             "Whether the model should predict the 'epsilon'/noise error, directly the reconstructed image 'x0', "
@@ -339,13 +342,11 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "--num_train_timesteps",
         type=int,
-        default=None,
         help="If None will use the value of the pretrained model.",
     )
     parser.add_argument(
         "--num_inference_steps",
         type=int,
-        default=None,
         help="If None will use the value of the pretrained model.",
     )
     parser.add_argument(
@@ -357,19 +358,16 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "--beta_schedule",
         type=str,
-        default=None,
         help="If None will use the value of the pretrained model.",
     )
     parser.add_argument(
         "--beta_start",
         type=float,
-        default=None,
         help="If None will use the value of the pretrained model.",
     )
     parser.add_argument(
         "--beta_end",
         type=float,
-        default=None,
         help="If None will use the value of the pretrained model.",
     )
     parser.add_argument(
@@ -394,7 +392,6 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "--resume_from_checkpoint",
         type=str,
-        default=None,
         help=(
             "Whether training should be resumed from a previous checkpoint. Use a path saved by"
             ' `--checkpointing_steps`, or `"latest"` to automatically select the last available checkpoint.'

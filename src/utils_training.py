@@ -19,26 +19,31 @@ from math import ceil
 from pathlib import Path
 from shutil import rmtree
 
-import numpy as np
 import torch
 import torch.nn.functional as F
 import torch_fidelity
 from accelerate import Accelerator
 from accelerate.logging import MultiProcessAdapter
-from diffusers import AutoencoderKL, DDIMScheduler, UNet2DConditionModel
+from diffusers import DDIMScheduler, UNet2DConditionModel
 from diffusers.training_utils import EMAModel
 from PIL.Image import Image
-from torch.nn.parallel import DistributedDataParallel
 from torchvision.datasets import ImageFolder
 from tqdm.auto import tqdm
 
 import wandb
-from src.custom_embedding import CustomEmbedding
-from src.custom_pipeline_stable_diffusion_img2img.custom_pipeline_stable_diffusion_img2img import (
+
+from .cond_unet_2d import CustomCondUNet2DModel
+from .custom_embedding import CustomEmbedding
+from .custom_pipeline_stable_diffusion_img2img import (
     CustomStableDiffusionImg2ImgPipeline,
 )
-
-from .utils_misc import extract_into_tensor, is_it_best_model, split
+from .pipeline_conditional_ddim import ConditionalDDIMPipeline
+from .utils_misc import (
+    extract_into_tensor,
+    is_it_best_model,
+    print_info_at_run_start,
+    split,
+)
 
 
 def resume_from_checkpoint(
@@ -65,13 +70,13 @@ def resume_from_checkpoint(
         path = Path(chckpnts_dir, dirs[-1]).as_posix() if len(dirs) > 0 else None
 
     if path is None:
-        accelerator.print(
+        logger.info(
             f"Checkpoint '{args.resume_from_checkpoint}' does not exist. Starting a new training run."
         )
         args.resume_from_checkpoint = None
         first_epoch, resume_step = 0, 0
     else:
-        accelerator.print(f"Resuming from checkpoint {path}")
+        logger.info(f"Resuming from checkpoint {path}")
         accelerator.load_state(path)
         global_step = int(path.split("_")[-1])
 
@@ -88,7 +93,9 @@ def get_training_setup(
     accelerator,
     train_dataloader,
     logger: MultiProcessAdapter,
-    dataset: ImageFolder,
+    pipeline_components: list[str],
+    components_to_train_transcribed: list[str],
+    nb_tot_samples: int,
     noise_scheduler: DDIMScheduler,
 ) -> tuple[int, list[int]]:
     """
@@ -121,39 +128,16 @@ def get_training_setup(
     actual_eval_batch_sizes_for_this_process = split(
         glob_eval_bs, nb_proc, accelerator.process_index
     )
-    accelerator.print("")
-    logger.info(
-        "\033[1m******************************* Running training *******************************\033[0m"
-    )
-    logger.info(f"  Num examples = \033[1m{len(dataset)}\033[0m")
-    logger.info(f"  Num epochs = \033[1m{args.num_epochs}\033[0m")
-    logger.info(
-        f"  Instantaneous batch size per device = \033[1m{args.train_batch_size}\033[0m"
-    )
-    logger.info(
-        f"  Total train batch size (w. parallel, distributed & accumulation) = \033[1m{total_batch_size}\033[0m"
-    )
-    logger.info(
-        f"  Gradient Accumulation steps = \033[1m{args.gradient_accumulation_steps}\033[0m"
-    )
-    logger.info(f"  Total optimization steps = \033[1m{max_train_steps}\033[0m")
-    logger.info(
-        f"  Num steps between checkpoints = \033[1m{args.checkpointing_steps}\033[0m"
-    )
-    tot_nb_chckpts = max_train_steps // args.checkpointing_steps
-    logger.info(f"  Num checkpoints during training = \033[1m{tot_nb_chckpts}\033[0m")
-    logger.info(f"  Components to train = \033[1m{args.components_to_train}\033[0m")
-    logger.info(f"  Output dir = \033[1m{args.output_dir}\033[0m")
-    logger.info(
-        f"  Probability of unconditional pass = \033[1m{args.proba_uncond}\033[0m"
-    )
-    logger.info(f"  Learning rate = \033[1m{args.learning_rate}\033[0m")
-    logger.info(f"  Num generated images = \033[1m{args.nb_generated_images}\033[0m")
-    logger.info(
-        f"  Num diffusion discretization steps = \033[1m{noise_scheduler.config.num_train_timesteps}\033[0m"
-    )
-    logger.info(
-        f"  Num diffusion generation steps = \033[1m{args.num_inference_steps}\033[0m"
+
+    print_info_at_run_start(
+        logger,
+        args,
+        pipeline_components,
+        components_to_train_transcribed,
+        noise_scheduler,
+        nb_tot_samples,
+        total_batch_size,
+        max_train_steps,
     )
 
     return (
@@ -163,42 +147,58 @@ def get_training_setup(
 
 
 def perform_training_epoch(
-    denoiser_model: UNet2DConditionModel,
-    autoencoder_model: AutoencoderKL,
     num_update_steps_per_epoch: int,
     accelerator: Accelerator,
+    pipeline: CustomStableDiffusionImg2ImgPipeline | ConditionalDDIMPipeline,
+    ema_models: dict[str, EMAModel],
+    components_to_train_transcribed: list[str],
     epoch: int,
     train_dataloader,
     args: Namespace,
     first_epoch: int,
     resume_step: int,
-    noise_scheduler,
     global_step: int,
     optimizer,
     lr_scheduler,
-    ema_denoiser: None | EMAModel,
-    ema_autoencoder: None | EMAModel,
     logger: MultiProcessAdapter,
-    class_embedding: CustomEmbedding,
     do_uncond_pass_across_all_procs: torch.BoolTensor,
     params_to_clip: list,
 ) -> int:
-    # set models to train mode
+    # 1. Retrieve models & set then to train mode if applicable
+    # components common to all models
+    denoiser_model = pipeline.unet
     denoiser_model.train()
-    autoencoder_model.train()
 
-    # unwrap the autoencoder before calling it
-    autoencoder_model = accelerator.unwrap_model(autoencoder_model)
+    noise_scheduler = pipeline.scheduler
 
-    # give me a pretty progress bar 🤩
+    # components specific to SD
+    if args.model_type == "StableDiffusion":
+        autoencoder_model = pipeline.vae
+        autoencoder_model.train()
+        # unwrap the autoencoder before calling it
+        autoencoder_model = accelerator.unwrap_model(autoencoder_model)
+
+        class_embedding = pipeline.class_embedding
+        class_embedding.train()
+    else:
+        autoencoder_model = None
+        class_embedding = None
+
+    # 2. Give me a pretty progress bar 🤩
     progress_bar = tqdm(
         total=num_update_steps_per_epoch,
         disable=not accelerator.is_local_main_process,
     )
     progress_bar.set_description(f"Epoch {epoch}")
 
-    # iterate over all batches
+    # 3. Iterate over all batches
     for step, batch in enumerate(train_dataloader):
+        if args.debug:
+            # stop at 10 steps for quick debug purposes
+            # TODO: this might break resume_from_checkpoint just below?
+            if step >= 10:
+                break
+
         # Skip steps until we reach the resumed step
         if args.resume_from_checkpoint and epoch == first_epoch and step < resume_step:
             if step % args.gradient_accumulation_steps == 0:
@@ -212,13 +212,14 @@ def perform_training_epoch(
             clean_images = batch["images"]
             class_labels = batch["class_labels"]
 
-        # Convert images to latent space
-        latents = autoencoder_model.encode(clean_images).latent_dist.sample()
-        latents = latents * autoencoder_model.config.scaling_factor
-        # TODO: what is this ↑?
+        if args.model_type == "StableDiffusion":
+            # Convert images to latent space
+            clean_images = autoencoder_model.encode(clean_images).latent_dist.sample()
+            clean_images = clean_images * autoencoder_model.config.scaling_factor
+            # TODO: what is this ↑?
 
         # Sample noise that we'll add to the images
-        noise = torch.randn(latents.shape).to(latents.device)
+        noise = torch.randn(clean_images.shape).to(clean_images.device)
 
         # Sample a random timestep for each image
         timesteps = torch.randint(
@@ -230,23 +231,29 @@ def perform_training_epoch(
 
         # Add noise to the clean images according to the noise magnitude at each timestep
         # (this is the forward diffusion process)
-        noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
+        noisy_images = noise_scheduler.add_noise(clean_images, noise, timesteps)
 
         # Unconditional pass for CLF guidance training
         do_unconditional_pass: bool = do_uncond_pass_across_all_procs[step].item()
+        accelerator.log(
+            {
+                "unconditional step": int(do_unconditional_pass),
+            },
+            step=global_step,
+        )
 
         # with accelerator.accumulate(denoiser_model): # TODO: fix grad accumulation for multiple models
-        loss_value = _forward_backward_pass(
+        loss_value = _diffusion_and_backward(
             args=args,
             accelerator=accelerator,
             global_step=global_step,
             denoiser_model=denoiser_model,
-            noisy_images=noisy_latents,
+            noisy_images=noisy_images,
             timesteps=timesteps,
             class_labels=class_labels,
             noise=noise,
             noise_scheduler=noise_scheduler,
-            clean_images=latents,
+            clean_images=clean_images,
             optimizer=optimizer,
             lr_scheduler=lr_scheduler,
             class_embedding=class_embedding,
@@ -259,10 +266,9 @@ def perform_training_epoch(
         if accelerator.sync_gradients:
             global_step = _syn_training_state(
                 args=args,
-                ema_denoiser=ema_denoiser,
-                ema_autoencoder=ema_autoencoder,
-                denoiser_model=denoiser_model,
-                autoencoder_model=autoencoder_model,
+                pipeline=pipeline,
+                components_to_train_transcribed=components_to_train_transcribed,
+                ema_models=ema_models,
                 progress_bar=progress_bar,
                 global_step=global_step,
                 accelerator=accelerator,
@@ -277,8 +283,7 @@ def perform_training_epoch(
             "epoch": epoch,
         }
         if args.use_ema:
-            logs["ema_denoiser_decay"] = ema_denoiser.cur_decay_value
-            logs["ema_autoencoder_decay"] = ema_autoencoder.cur_decay_value
+            logs["ema_decay"] = list(ema_models.values())[0].cur_decay_value
         progress_bar.set_postfix(**logs)
         accelerator.log(logs, step=global_step)
         if math.isnan(loss_value) and accelerator.is_main_process:
@@ -298,31 +303,105 @@ def perform_training_epoch(
     return global_step
 
 
-def _forward_backward_pass(
+def _diffusion_and_backward(
     args: Namespace,
     accelerator: Accelerator,
     global_step: int,
-    denoiser_model: UNet2DConditionModel,
-    noisy_images,
-    timesteps,
+    denoiser_model: UNet2DConditionModel | CustomCondUNet2DModel,
+    noisy_images: torch.Tensor,
+    timesteps: torch.Tensor,
     class_labels: torch.Tensor,
-    noise,
+    noise: torch.Tensor,
     noise_scheduler: DDIMScheduler,
-    clean_images,
+    clean_images: torch.Tensor,
     optimizer,
     lr_scheduler,
-    class_embedding: CustomEmbedding,
+    class_embedding: CustomEmbedding | None,
     do_unconditional_pass: bool,
     logger: MultiProcessAdapter,
     params_to_clip: list,
 ) -> float:
+    # 1. Obtain model prediction
+    match args.model_type:
+        case "StableDiffusion":
+            model_output = _SD_prediction_wrapper(
+                accelerator=accelerator,
+                do_unconditional_pass=do_unconditional_pass,
+                class_labels=class_labels,
+                args=args,
+                class_embedding=class_embedding,
+                denoiser_model=denoiser_model,
+                noisy_images=noisy_images,
+                timesteps=timesteps,
+            )
+        case "DDIM":
+            model_output = _DDIM_prediction_wrapper(
+                accelerator,
+                do_unconditional_pass,
+                class_labels,
+                denoiser_model,
+                noisy_images,
+                timesteps,
+            )
+        case _:
+            raise ValueError(f"Unsupported model type: {args.model_type}")
+
+    # 2. Compute loss
+    match noise_scheduler.config.prediction_type:
+        case "epsilon":
+            loss = F.mse_loss(model_output, noise)
+        case "sample":
+            alpha_t = extract_into_tensor(
+                noise_scheduler.alphas_cumprod,
+                timesteps,
+                (clean_images.shape[0], 1, 1, 1),
+            )
+            snr_weights = alpha_t / (1 - alpha_t)
+            loss = snr_weights * F.mse_loss(
+                model_output, clean_images, reduction="none"
+            )  # use SNR weighting from distillation paper
+            loss = loss.mean()
+        case "v_prediction":
+            velocity = noise_scheduler.get_velocity(clean_images, noise, timesteps)
+            loss = F.mse_loss(model_output, velocity)
+        case _:
+            raise ValueError(f"Unsupported prediction type: {args.prediction_type}")
+
+    # 3. Compute & clip gradients
+    accelerator.backward(loss)
+
+    if accelerator.sync_gradients:
+        gard_norm = accelerator.clip_grad_norm_(params_to_clip, 1.0)
+        accelerator.log({"gradient norm": gard_norm}, step=global_step)
+        if gard_norm.isnan().any() and accelerator.is_main_process:
+            msg = f"Gradient norm is NaN at step {global_step}"
+            wandb.alert(
+                title="NaN gradient norm",
+                text=msg,
+                level=wandb.AlertLevel.ERROR,
+                wait_duration=21600,  # 6 hours
+            )
+            logger.error(msg)
+
+    # 4. Perform optimization step
+    optimizer.step()
+    lr_scheduler.step()
+    optimizer.zero_grad()
+
+    return loss.item()
+
+
+def _SD_prediction_wrapper(
+    accelerator: Accelerator,
+    do_unconditional_pass: bool,
+    class_labels: torch.Tensor,
+    args: Namespace,
+    class_embedding: CustomEmbedding,
+    denoiser_model: UNet2DConditionModel,
+    noisy_images: torch.Tensor,
+    timesteps: torch.Tensor,
+) -> torch.Tensor:
     # classifier-free guidance: randomly discard conditioning to train unconditionally
-    accelerator.log(
-        {
-            "unconditional step": int(do_unconditional_pass),
-        },
-        step=global_step,
-    )
     if do_unconditional_pass:
         class_emb = torch.zeros(
             (
@@ -349,60 +428,56 @@ def _forward_backward_pass(
         encoder_hidden_states=encoder_hidden_states,
     ).sample
 
-    if args.prediction_type == "epsilon":
-        loss = F.mse_loss(model_output, noise)
-    elif args.prediction_type == "sample":
-        alpha_t = extract_into_tensor(
-            noise_scheduler.alphas_cumprod,
-            timesteps,
-            (clean_images.shape[0], 1, 1, 1),
-        )
-        snr_weights = alpha_t / (1 - alpha_t)
-        loss = snr_weights * F.mse_loss(
-            model_output, clean_images, reduction="none"
-        )  # use SNR weighting from distillation paper
-        loss = loss.mean()
-    elif noise_scheduler.config.prediction_type == "v_prediction":
-        velocity = noise_scheduler.get_velocity(clean_images, noise, timesteps)
-        loss = F.mse_loss(model_output, velocity)
-    else:
-        raise ValueError(f"Unsupported prediction type: {args.prediction_type}")
+    return model_output
 
-    accelerator.backward(loss)
 
-    if accelerator.sync_gradients:
-        gard_norm = accelerator.clip_grad_norm_(params_to_clip, 1.0)
-        accelerator.log({"gradient norm": gard_norm}, step=global_step)
-        if gard_norm.isnan().any() and accelerator.is_main_process:
-            msg = f"Gradient norm is NaN at step {global_step}"
-            wandb.alert(
-                title="NaN gradient norm",
-                text=msg,
-                level=wandb.AlertLevel.ERROR,
-                wait_duration=21600,  # 6 hours
+def _DDIM_prediction_wrapper(
+    accelerator: Accelerator,
+    do_unconditional_pass: bool,
+    class_labels: torch.Tensor,
+    denoiser_model: CustomCondUNet2DModel,
+    noisy_images: torch.Tensor,
+    timesteps: torch.Tensor,
+):
+    # classifier-free guidance: randomly discard conditioning to train unconditionally
+    if do_unconditional_pass:
+        class_emb = torch.zeros(
+            (
+                class_labels.shape[0],
+                accelerator.unwrap_model(denoiser_model).time_embed_dim,
             )
-            logger.error(msg)
-    optimizer.step()
-    lr_scheduler.step()
-    optimizer.zero_grad()
+        ).to(accelerator.device)
+        class_labels = None
+    else:
+        class_emb = None
 
-    return loss.item()
+    # Predict the noise residual
+    model_output = denoiser_model(
+        sample=noisy_images,
+        timestep=timesteps,
+        class_labels=class_labels,
+        class_emb=class_emb,
+    ).sample
+
+    return model_output
 
 
 def _syn_training_state(
     args: Namespace,
-    ema_denoiser: EMAModel | None,
-    ema_autoencoder: EMAModel | None,
-    denoiser_model: UNet2DConditionModel,
-    autoencoder_model: AutoencoderKL,
+    pipeline: CustomStableDiffusionImg2ImgPipeline | ConditionalDDIMPipeline,
+    components_to_train_transcribed: list[str],
+    ema_models: dict[str, EMAModel],
     progress_bar,
     global_step: int,
     accelerator: Accelerator,
     logger: MultiProcessAdapter,
 ) -> int:
+    # update the EMA weights if applicable
     if args.use_ema:
-        ema_denoiser.step(denoiser_model.parameters())
-        ema_autoencoder.step(autoencoder_model.parameters())
+        for module_name, module in pipeline.components.items():
+            if module_name in components_to_train_transcribed:
+                ema_models[module_name].step(module.parameters())
+
     progress_bar.update()
     global_step += 1
 
@@ -423,7 +498,7 @@ def _syn_training_state(
                 ]
                 if len(to_del) > 1:
                     logger.warning(
-                        f"\033[1;33m=====> MORE THAN 1 CHECKPOINT TO DELETE:\033[0m\n {to_del}"
+                        f"\033[1;33mMORE THAN 1 CHECKPOINT TO DELETE:\033[0m\n {to_del}"
                     )
                 for dir in to_del:
                     logger.info(f"Deleting {dir}...")
@@ -436,51 +511,55 @@ def _syn_training_state(
 def generate_samples_and_compute_metrics(
     args: Namespace,
     accelerator: Accelerator,
-    autoencoder_model: AutoencoderKL,
-    denoiser_model: UNet2DConditionModel,
-    class_embedding: CustomEmbedding,
-    ema_denoiser: EMAModel | None,
-    ema_autoencoder: EMAModel | None,
-    noise_scheduler: DDIMScheduler,
+    pipeline: CustomStableDiffusionImg2ImgPipeline | ConditionalDDIMPipeline,
     image_generation_tmp_save_folder: Path,
     actual_eval_batch_sizes_for_this_process,
     epoch: int,
     global_step: int,
-    full_pipeline_save_path: Path,
+    ema_models: dict[str, EMAModel],
+    components_to_train_transcribed: list[str],
     nb_classes: int,
     logger: MultiProcessAdapter,
     dataset: ImageFolder,
     best_metric: float | None,
 ) -> tuple[bool | None, float | None]:
+    # 1. Progress bar
     progress_bar = tqdm(
         total=len(actual_eval_batch_sizes_for_this_process),
         desc=f"Generating images on process {accelerator.process_index}",
         disable=not accelerator.is_local_main_process,
     )
-    denoiser_model = accelerator.unwrap_model(denoiser_model)
-    class_embedding = accelerator.unwrap_model(class_embedding)
-    autoencoder_model = accelerator.unwrap_model(autoencoder_model)
 
-    if args.use_ema:
-        ema_denoiser.store(denoiser_model.parameters())
-        ema_denoiser.copy_to(denoiser_model.parameters())
-        ema_autoencoder.store(autoencoder_model.parameters())
-        ema_autoencoder.copy_to(autoencoder_model.parameters())
+    # 2. Use the EMA weights if applicable
+    pipeline_components = {}
+    for module_name, module in pipeline.components.items():
+        if module_name in components_to_train_transcribed and args.use_ema:
+            # this module is EMA'ed; extract it
+            unwrapped_module = accelerator.unwrap_model(module)
+            # store its parameters in the EMA model
+            ema_models[module_name].store(unwrapped_module.parameters())
+            # temporarily copy the EMA parameters to the module
+            ema_models[module_name].copy_to(unwrapped_module.parameters())
+            # and save that module to the inference pipeline
+            pipeline_components[module_name] = accelerator.unwrap_model(
+                unwrapped_module
+            )
+        else:
+            pipeline_components[module_name] = accelerator.unwrap_model(module)
 
-    # load the previously downloaded pipeline
-    pipeline: CustomStableDiffusionImg2ImgPipeline = CustomStableDiffusionImg2ImgPipeline.from_pretrained(  # pyright: ignore reportGeneralTypeIssues
-        full_pipeline_save_path,
-        local_files_only=True,  # do not pull from hub during training
-        # then override modified components:
-        vae=autoencoder_model,
-        unet=denoiser_model,
-        scheduler=noise_scheduler,
-        class_embedding=class_embedding,
-    ).to(
-        accelerator.device
-    )
-    pipeline.set_progress_bar_config(disable=True)
+    # 3. Create inference pipeline
+    match args.model_type:
+        case "StableDiffusion":
+            inference_pipeline = CustomStableDiffusionImg2ImgPipeline(
+                **pipeline_components
+            )
+        case "DDIM":
+            inference_pipeline = ConditionalDDIMPipeline(**pipeline_components)
+        case _:
+            raise ValueError(f"Unknown model type {args.model_type}")
+    inference_pipeline.set_progress_bar_config(disable=True)
 
+    # 4. Miscellaneous preparations
     # set manual seed in order to observe the outputs produced from the same Gaussian noise
     generator = torch.Generator(device=accelerator.device).manual_seed(5742877512)
 
@@ -489,28 +568,59 @@ def generate_samples_and_compute_metrics(
     if accelerator.is_main_process:
         main_metric_values = []
 
-    # Run pipeline in inference (sample random noise and denoise)
+    # 5. Run pipeline in inference (sample random noise and denoise)
     # Generate args.nb_generated_images in batches *per class*
     # for metrics computation
     for class_label in range(nb_classes):
         # get class name
-        class_name = dataset.classes[class_label]
+        if args.proba_uncond == 1:
+            class_name = "unconditional"
+        else:
+            class_name = dataset.classes[class_label]
+
+        # clean image_generation_tmp_save_folder (it's per-class)
+        if accelerator.is_local_main_process:
+            if os.path.exists(image_generation_tmp_save_folder):
+                rmtree(image_generation_tmp_save_folder)
+            os.makedirs(image_generation_tmp_save_folder, exist_ok=False)
+        accelerator.wait_for_everyone()
+
+        # pretty bar
+        postfix_str = f"Current class: {class_name} ({class_label+1}/{nb_classes})"
+        progress_bar.set_postfix_str(postfix_str)
 
         # generate and save to disk all images for this class
-        _generate_save_images_for_this_class(
-            accelerator=accelerator,
-            image_generation_tmp_save_folder=image_generation_tmp_save_folder,
-            class_label=class_label,
-            class_name=class_name,
-            nb_classes=nb_classes,
-            progress_bar=progress_bar,
-            actual_eval_batch_sizes_for_this_process=actual_eval_batch_sizes_for_this_process,
-            args=args,
-            generator=generator,
-            pipeline=pipeline,
-            epoch=epoch,
-            global_step=global_step,
-        )
+        match args.model_type:
+            case "StableDiffusion":
+                _generate_save_images_for_this_class_SD(
+                    accelerator=accelerator,
+                    image_generation_tmp_save_folder=image_generation_tmp_save_folder,
+                    class_label=class_label,
+                    class_name=class_name,
+                    progress_bar=progress_bar,
+                    actual_eval_batch_sizes_for_this_process=actual_eval_batch_sizes_for_this_process,
+                    args=args,
+                    generator=generator,
+                    pipeline=inference_pipeline,
+                    epoch=epoch,
+                    global_step=global_step,
+                )
+            case "DDIM":
+                _generate_save_images_for_this_class_DDIM(
+                    accelerator=accelerator,
+                    image_generation_tmp_save_folder=image_generation_tmp_save_folder,
+                    class_label=class_label,
+                    class_name=class_name,
+                    progress_bar=progress_bar,
+                    actual_eval_batch_sizes_for_this_process=actual_eval_batch_sizes_for_this_process,
+                    args=args,
+                    generator=generator,
+                    pipeline=inference_pipeline,
+                    epoch=epoch,
+                    global_step=global_step,
+                )
+            case _:
+                raise ValueError(f"Invalid model type: {args.model_type}")
         # wait for all processes to finish generating+saving images
         # before computing metrics
         accelerator.wait_for_everyone()
@@ -530,7 +640,7 @@ def generate_samples_and_compute_metrics(
         # resync everybody for each class
         accelerator.wait_for_everyone()
 
-    # is it the best model to date?
+    # 6. Check if it is the best model to date
     if accelerator.is_main_process:
         best_model_to_date, best_metric = is_it_best_model(
             main_metric_values, best_metric, logger
@@ -539,39 +649,23 @@ def generate_samples_and_compute_metrics(
         best_model_to_date = None
         best_metric = None
 
-    if args.use_ema:
-        ema_denoiser.restore(denoiser_model.parameters())
-        ema_autoencoder.restore(autoencoder_model.parameters())
-
     return best_model_to_date, best_metric
 
 
 @torch.no_grad()
-def _generate_save_images_for_this_class(
+def _generate_save_images_for_this_class_SD(
     accelerator: Accelerator,
     image_generation_tmp_save_folder: Path,
     class_label: int,
     class_name: str,
-    nb_classes: int,
     progress_bar,
-    actual_eval_batch_sizes_for_this_process,
+    actual_eval_batch_sizes_for_this_process: list[int],
     args: Namespace,
     generator: torch.Generator,
     pipeline: CustomStableDiffusionImg2ImgPipeline,
     epoch: int,
     global_step: int,
 ) -> None:
-    # clean image_generation_tmp_save_folder (it's per-class)
-    if accelerator.is_local_main_process:
-        if os.path.exists(image_generation_tmp_save_folder):
-            rmtree(image_generation_tmp_save_folder)
-        os.makedirs(image_generation_tmp_save_folder, exist_ok=False)
-    accelerator.wait_for_everyone()
-
-    # pretty bar
-    postfix_str = f"Current class: {class_name} ({class_label+1}/{nb_classes})"
-    progress_bar.set_postfix_str(postfix_str)
-
     # loop over eval batches for this process
     for batch_idx, actual_bs in enumerate(actual_eval_batch_sizes_for_this_process):
         images, latents = pipeline(  # pyright: ignore reportGeneralTypeIssues
@@ -640,6 +734,74 @@ def _generate_save_images_for_this_class(
         progress_bar.update()
 
 
+def _generate_save_images_for_this_class_DDIM(
+    accelerator: Accelerator,
+    image_generation_tmp_save_folder: Path,
+    class_label: int,
+    class_name: str,
+    progress_bar,
+    actual_eval_batch_sizes_for_this_process: list[int],
+    args: Namespace,
+    generator: torch.Generator,
+    pipeline: ConditionalDDIMPipeline,
+    epoch: int,
+    global_step: int,
+):
+    # loop over eval batches for this process
+    for batch_idx, actual_bs in enumerate(actual_eval_batch_sizes_for_this_process):
+        if args.proba_uncond == 1:
+            class_emb = torch.zeros(
+                (actual_bs, accelerator.unwrap_model(pipeline.unet).time_embed_dim)
+            ).to(accelerator.device)
+            class_labels = None
+        else:
+            class_labels = torch.full(
+                (actual_bs,), class_label, device=pipeline.device
+            ).long()
+            class_emb = None
+        images = pipeline(
+            class_labels,
+            class_emb,
+            args.guidance_factor,
+            generator=generator,
+            batch_size=actual_bs,
+            num_inference_steps=args.num_inference_steps,
+            output_type="numpy",
+        ).images
+
+        # save images to disk
+        images_pil: list[Image] = pipeline.numpy_to_pil(images)
+        for idx, img in enumerate(images_pil):
+            tot_idx = args.eval_batch_size * batch_idx + idx
+            filename = f"process_{accelerator.local_process_index}_sample_{tot_idx}.png"
+            assert not Path(
+                filename
+            ).exists(), "Rewriting existing generated image file!"
+            img.save(
+                Path(
+                    image_generation_tmp_save_folder,
+                    filename,
+                )
+            )
+
+        # denormalize the images/latents and save to logger if first batch
+        # (first batch of main process only to prevent "logger overflow")
+        # (and actualy limit to 50 images/latents maximum)
+        if batch_idx == 0 and accelerator.is_main_process:
+            # log images
+            images_processed = (images * 255).round().astype("uint8")
+            accelerator.log(
+                {
+                    f"generated_samples/{class_name}": [
+                        wandb.Image(img) for img in images_processed[:50]
+                    ],
+                    "epoch": epoch,
+                },
+                step=global_step,
+            )
+        progress_bar.update()
+
+
 @torch.no_grad()
 def _compute_log_metrics(
     logger: MultiProcessAdapter,
@@ -682,17 +844,14 @@ def _compute_log_metrics(
 
 def save_pipeline(
     accelerator: Accelerator,
-    autoencoder_model: AutoencoderKL,
-    denoiser_model: UNet2DConditionModel,
-    class_embedding: CustomEmbedding,
     args: Namespace,
-    ema_denoiser: EMAModel | None,
-    ema_autoencoder: EMAModel | None,
-    noise_scheduler: DDIMScheduler,
+    pipeline: CustomStableDiffusionImg2ImgPipeline | ConditionalDDIMPipeline,
     full_pipeline_save_folder: Path,
     repo,
     epoch: int,
     logger: MultiProcessAdapter,
+    ema_models: dict,
+    components_to_train_transcribed: list[str],
     first_save: bool = False,
 ) -> None:
     if (
@@ -705,30 +864,39 @@ def save_pipeline(
         )
         return
 
-    denoiser_model = accelerator.unwrap_model(denoiser_model)
-    class_embedding = accelerator.unwrap_model(class_embedding)
-    autoencoder_model = accelerator.unwrap_model(autoencoder_model)
+    # Use the EMA weights if applicable
+    pipeline_components = {}
+    for module_name, module in pipeline.components.items():
+        if module_name in components_to_train_transcribed and args.use_ema:
+            # this module is EMA'ed; extract it
+            unwrapped_module = accelerator.unwrap_model(module)
+            # store its parameters in the EMA model
+            ema_models[module_name].store(unwrapped_module.parameters())
+            # temporarily copy the EMA parameters to the module
+            ema_models[module_name].copy_to(unwrapped_module.parameters())
+            # and save that module to the inference pipeline
+            pipeline_components[module_name] = accelerator.unwrap_model(
+                unwrapped_module
+            )
+        else:
+            pipeline_components[module_name] = accelerator.unwrap_model(module)
 
-    if args.use_ema:
-        ema_denoiser.store(denoiser_model.parameters())
-        ema_denoiser.copy_to(denoiser_model.parameters())
-        ema_autoencoder.store(autoencoder_model.parameters())
-        ema_autoencoder.copy_to(autoencoder_model.parameters())
-
-    pipeline = CustomStableDiffusionImg2ImgPipeline(
-        vae=autoencoder_model,
-        unet=denoiser_model,
-        scheduler=noise_scheduler,
-        class_embedding=class_embedding,
-    )
+    # Create inference pipeline
+    match args.model_type:
+        case "StableDiffusion":
+            inference_pipeline = CustomStableDiffusionImg2ImgPipeline(
+                **pipeline_components
+            )
+        case "DDIM":
+            inference_pipeline = ConditionalDDIMPipeline(**pipeline_components)
+        case _:
+            raise ValueError(f"Unknown model type {args.model_type}")
 
     # save to full_pipeline_save_folder (≠ initial_pipeline_save_path...)
-    logger.info(f"Saving full pipeline to {full_pipeline_save_folder} at epoch {epoch}")
-    pipeline.save_pretrained(full_pipeline_save_folder)
-
-    if args.use_ema:
-        ema_denoiser.restore(denoiser_model.parameters())
-        ema_autoencoder.restore(autoencoder_model.parameters())
+    logger.info(
+        f"Saving full {args.model_type} pipeline to {full_pipeline_save_folder} at epoch {epoch}"
+    )
+    inference_pipeline.save_pretrained(full_pipeline_save_folder)
 
     if args.push_to_hub:
         repo.push_to_hub(commit_message=f"Epoch {epoch}", blocking=False)

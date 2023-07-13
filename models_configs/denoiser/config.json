@@ -1,0 +1,45 @@
+{
+  "_class_name": "CondUNet2DModel",
+  "_diffusers_version": "0.17.1",
+  "act_fn": "silu",
+  "attention_head_dim": 8,
+  "block_out_channels": [
+    320,
+    640,
+    1280,
+    1280
+  ],
+  "center_input_sample": false,
+  "class_embed_type": null,
+  "conv_in_kernel": 3,
+  "conv_out_kernel": 3,
+  "down_block_types": [
+    "AttnDownBlock2D",
+    "AttnDownBlock2D",
+    "AttnDownBlock2D",
+    "DownBlock2D"
+  ],
+  "downsample_padding": 1,
+  "flip_sin_to_cos": true,
+  "freq_shift": 0,
+  "in_channels": 3,
+  "layers_per_block": 2,
+  "mid_block_scale_factor": 1,
+  "norm_eps": 1e-05,
+  "norm_num_groups": 32,
+  "num_class_embeds": 2,
+  "out_channels": 3,
+  "resnet_out_scale_factor": 1.0,
+  "resnet_skip_time_act": false,
+  "resnet_time_scale_shift": "default",
+  "sample_size": 128,
+  "time_embedding_type": "positional",
+  "up_block_types": [
+    "UpBlock2D",
+    "AttnUpBlock2D",
+    "AttnUpBlock2D",
+    "AttnUpBlock2D"
+  ],
+  "upcast_attention": true,
+  "use_linear_projection": true
+}
