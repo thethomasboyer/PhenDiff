@@ -85,9 +85,12 @@ def args_checker(args: Namespace, logger: MultiProcessAdapter) -> None:
         )
 
     if args.compute_kid and (args.nb_generated_images < args.kid_subset_size):
-        raise ValueError(
-            f"'nb_generated_images' (={args.nb_generated_images}) must be >= 'kid_subset_size' (={args.kid_subset_size})"
-        )
+        if args.debug:
+            pass  # when debug flag, kid_subset_size is modified
+        else:
+            raise ValueError(
+                f"'nb_generated_images' (={args.nb_generated_images}) must be >= 'kid_subset_size' (={args.kid_subset_size})"
+            )
 
     if args.gradient_accumulation_steps != 1:
         raise NotImplementedError("Gradient accumulation is not yet supported; TODO!")
@@ -134,6 +137,9 @@ def args_checker(args: Namespace, logger: MultiProcessAdapter) -> None:
             and args.denoiser_config_path is None
         )
     )
+
+    if args.perc_samples is not None:
+        assert 0 <= args.perc_samples <= 1, "perc_samples must be in [0, 1]"
 
 
 def create_repo_structure(

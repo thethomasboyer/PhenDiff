@@ -94,6 +94,11 @@ def parse_args() -> Namespace:
         ),
     )
     parser.add_argument(
+        "--perc_samples",
+        type=float,
+        help="The percentage of samples (∈ [0, 1]) to use from the training dataset *inside each class*.",
+    )
+    parser.add_argument(
         "--use_pytorch_loader",
         default=True,
         action="store_true",
@@ -207,9 +212,9 @@ def parse_args() -> Namespace:
     #     type=float,
     #     help="The starting point of the denoising schedule (between 0 and 1).",
     # )
-    # TODO: allow gradient accumulation back (deactivated for now because no multiple models can be passed to accumulate();
+    # TODO: allow gradient accumulation back (deactivated for now because multiple models cannot be passed to accumulate();
     # see https://github.com/huggingface/accelerate/issues/668 for solutions; HF team appears to be working on it 🥰;
-    # an easy fix would be to wrap everything inside a super model)
+    # an easy fix would be to wrap everything inside a super nn.Module model)
     parser.add_argument(
         "--gradient_accumulation_steps",
         type=int,

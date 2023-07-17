@@ -197,6 +197,7 @@ def perform_training_epoch(
             # stop at 10 steps for quick debug purposes
             # TODO: this might break resume_from_checkpoint just below?
             if step >= 10:
+                logger.warning("Debug flag: stopping after 10 steps")
                 break
 
         # Skip steps until we reach the resumed step
