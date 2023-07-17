@@ -19,6 +19,8 @@ from diffusers.pipelines.pipeline_utils import DiffusionPipeline, ImagePipelineO
 from diffusers.schedulers import DDIMScheduler
 from diffusers.utils import randn_tensor
 
+DEFAULT_NUM_INFERENCE_STEPS = 50
+
 
 class ConditionalDDIMPipeline(DiffusionPipeline):
     r"""
@@ -51,7 +53,7 @@ class ConditionalDDIMPipeline(DiffusionPipeline):
         batch_size: int = 1,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         eta: float = 0.0,
-        num_inference_steps: int = 50,
+        num_inference_steps: int = DEFAULT_NUM_INFERENCE_STEPS,
         use_clipped_model_output: Optional[bool] = None,
         output_type: Optional[str] = "pil",
         return_dict: bool = True,
@@ -103,6 +105,10 @@ class ConditionalDDIMPipeline(DiffusionPipeline):
                 f"You have passed a list of generators of length {len(generator)}, but requested an effective batch"
                 f" size of {batch_size}. Make sure the batch size matches the length of the generators."
             )
+
+        if num_inference_steps is None:
+            # None means default value
+            num_inference_steps = DEFAULT_NUM_INFERENCE_STEPS
 
         # Sample gaussian noise to begin loop
         if isinstance(self.unet.config.sample_size, int):
