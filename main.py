@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from argparse import Namespace
 
 import torch
@@ -63,7 +64,8 @@ def main(args: Namespace):
     )
 
     # ------------------------------------- WandB ------------------------------------
-    wandb_project_name = args.output_dir.lstrip("experiments/")
+    # take the last part of the path as the project name
+    wandb_project_name = os.path.basename(os.path.normpath(args.output_dir))
     logger.info(f"Logging to project {wandb_project_name}")
     accelerator.init_trackers(
         project_name=wandb_project_name,
