@@ -146,27 +146,31 @@ def create_repo_structure(
     args: Namespace, accelerator, logger: MultiProcessAdapter
 ) -> tuple[Path, Path, Path, None]:
     repo = None
+    this_experiment_folder = Path(
+        args.exp_output_dirs_parent_folder, args.experiment_name
+    )
+
     if args.push_to_hub:
         raise NotImplementedError()
         # if args.hub_model_id is None:
         #     repo_name = get_full_repo_name(
-        #         Path(args.output_dir).name, token=args.hub_token
+        #         Path(this_experiment_folder).name, token=args.hub_token
         #     )
         # else:
         #     repo_name = args.hub_model_id
         #     create_repo(repo_name, exist_ok=True, token=args.hub_token)
-        # repo = Repository(args.output_dir, clone_from=repo_name, token=args.hub_token)
+        # repo = Repository(this_experiment_folder, clone_from=repo_name, token=args.hub_token)
 
-        # with open(os.path.join(args.output_dir, ".gitignore"), "w+") as gitignore:
+        # with open(os.path.join(this_experiment_folder, ".gitignore"), "w+") as gitignore:
         #     if "step_*" not in gitignore:
         #         gitignore.write("step_*\n")
         #     if "epoch_*" not in gitignore:
         #         gitignore.write("epoch_*\n")
-    elif args.output_dir is not None and accelerator.is_main_process:
-        os.makedirs(args.output_dir, exist_ok=True)
+    elif accelerator.is_main_process:
+        os.makedirs(this_experiment_folder, exist_ok=True)
 
     # Create a folder to save the pipeline during training
-    full_pipeline_save_folder = Path(args.output_dir, "full_pipeline_save")
+    full_pipeline_save_folder = Path(this_experiment_folder, "full_pipeline_save")
     if accelerator.is_main_process:
         os.makedirs(full_pipeline_save_folder, exist_ok=True)
 
@@ -181,11 +185,11 @@ def create_repo_structure(
     # Create a temporary folder to save the generated images during training.
     # Used for metrics computations; a small number of these (eval_batch_size) is logged
     image_generation_tmp_save_folder = Path(
-        args.output_dir, ".tmp_image_generation_folder"
+        this_experiment_folder, ".tmp_image_generation_folder"
     )
 
     # verify that the checkpointing folder is empty if not resuming run from a checkpoint
-    chckpt_save_path = Path(args.output_dir, "checkpoints")
+    chckpt_save_path = Path(this_experiment_folder, "checkpoints")
     if accelerator.is_main_process:
         os.makedirs(chckpt_save_path, exist_ok=True)
         chckpts = list(chckpt_save_path.iterdir())
@@ -300,7 +304,13 @@ def get_HF_component_names(components_to_train: list[str]) -> list[str]:
 
 # From https://stackoverflow.com/a/56877039/12723904
 # The 'Table of Content' [TOC] style print function
-def _format_info(key: str, val: str, space_char: str = "_", val_loc: int = 78) -> str:
+def _pretty_info_log(
+    logger: MultiProcessAdapter,
+    key: str,
+    val,
+    space_char: str = "_",
+    val_loc: int = 78,
+) -> None:
     # key:        This would be the TOC item equivalent
     # val:        This would be the TOC page number equivalent
     # space_char: This is the spacing character between key and val (often a dot for a TOC), must be >= 5
@@ -314,7 +324,8 @@ def _format_info(key: str, val: str, space_char: str = "_", val_loc: int = 78) -
         key = cut_str.format(key) + "..." + space_char
 
     space_str = "{:" + space_char + ">" + str(val_loc - len(key) + len(str(val))) + "}"
-    return key + space_str.format("\033[1m" + str(val) + "\033[0m")
+    to_print = key + space_str.format("\033[1m" + str(val) + "\033[0m")
+    logger.info(to_print)
 
 
 def print_info_at_run_start(
@@ -328,131 +339,112 @@ def print_info_at_run_start(
     max_train_steps: int,
 ):
     logger.info("\033[1m" + "*" * 46 + " Running training " + "*" * 46 + "\033[0m")
-    logger.info(
-        _format_info(
-            "Model",
-            args.model_type,
-        )
+    _pretty_info_log(
+        logger,
+        "Model",
+        args.model_type,
     )
-    logger.info(
-        _format_info(
-            "Output dir",
-            args.output_dir,
-        )
+    _pretty_info_log(
+        logger,
+        "Experiment name",
+        args.experiment_name,
     )
-    logger.info(_format_info("Pretrained model", args.pretrained_model_name_or_path))
-    logger.info(
-        _format_info(
-            "Components to train",
-            str(args.components_to_train),
-        )
+    this_experiment_folder = Path(
+        args.exp_output_dirs_parent_folder, args.experiment_name
     )
-    logger.info(
-        _format_info(
-            "Components kept frozen",
-            str(set(pipeline_components) - set(components_to_train_transcribed)),
-        )
+    _pretty_info_log(
+        logger, "Experiment output folder", this_experiment_folder.as_posix()
     )
-    logger.info(
-        _format_info(
-            "Num diffusion discretization steps",
-            noise_scheduler.config.num_train_timesteps,
-        )
+    _pretty_info_log(logger, "Pretrained model", args.pretrained_model_name_or_path)
+    _pretty_info_log(logger, "Components to train", str(args.components_to_train))
+    _pretty_info_log(
+        logger,
+        "Components kept frozen",
+        str(set(pipeline_components) - set(components_to_train_transcribed)),
     )
-    logger.info(
-        _format_info(
-            "Num diffusion generation steps",
-            args.num_inference_steps,
-        )
+    _pretty_info_log(
+        logger,
+        "Num diffusion discretization steps",
+        noise_scheduler.config.num_train_timesteps,
     )
-    logger.info(
-        _format_info(
-            "Guidance Factor",
-            args.guidance_factor,
-        )
+    _pretty_info_log(
+        logger,
+        "Num diffusion generation steps",
+        args.num_inference_steps,
     )
-    logger.info(
-        _format_info(
-            "Probability of unconditional pass",
-            args.proba_uncond,
-        )
+    _pretty_info_log(
+        logger,
+        "Guidance Factor",
+        args.guidance_factor,
     )
-    logger.info(
-        _format_info(
-            "Prediction type",
-            noise_scheduler.config.prediction_type,
-        )
+    _pretty_info_log(
+        logger,
+        "Probability of unconditional pass",
+        args.proba_uncond,
     )
-    logger.info(
-        _format_info(
-            "Learning rate",
-            args.learning_rate,
-        )
+    _pretty_info_log(
+        logger,
+        "Prediction type",
+        noise_scheduler.config.prediction_type,
     )
-    logger.info(
-        _format_info(
-            "Num examples",
-            tot_nb_samples,
-        )
+    _pretty_info_log(
+        logger,
+        "Learning rate",
+        args.learning_rate,
     )
-    logger.info(
-        _format_info(
-            "Num epochs",
-            args.num_epochs,
-        )
+    _pretty_info_log(
+        logger,
+        "Num examples",
+        tot_nb_samples,
     )
-    logger.info(
-        _format_info(
-            "Instantaneous batch size per device",
-            args.train_batch_size,
-        )
+    _pretty_info_log(
+        logger,
+        "Num epochs",
+        args.num_epochs,
     )
-    logger.info(
-        _format_info(
-            "Total train batch size (w. parallel, distributed & accumulation)",
-            total_batch_size,
-        )
+    _pretty_info_log(
+        logger,
+        "Instantaneous batch size per device",
+        args.train_batch_size,
     )
-    logger.info(
-        _format_info(
-            "Gradient Accumulation steps",
-            args.gradient_accumulation_steps,
-        )
+    _pretty_info_log(
+        logger,
+        "Total train batch size (w. parallel, distributed & accumulation)",
+        total_batch_size,
     )
-    logger.info(
-        _format_info(
-            "Use EMA",
-            args.use_ema,
-        )
+    _pretty_info_log(
+        logger,
+        "Gradient Accumulation steps",
+        args.gradient_accumulation_steps,
     )
-    logger.info(
-        _format_info(
-            "Total optimization steps",
-            max_train_steps,
-        )
+    _pretty_info_log(
+        logger,
+        "Use EMA",
+        args.use_ema,
     )
-    logger.info(
-        _format_info(
-            "Num steps between checkpoints",
-            args.checkpointing_steps,
-        )
+    _pretty_info_log(
+        logger,
+        "Total optimization steps",
+        max_train_steps,
+    )
+    _pretty_info_log(
+        logger,
+        "Num steps between checkpoints",
+        args.checkpointing_steps,
     )
     tot_nb_chckpts = max_train_steps // args.checkpointing_steps
-    logger.info(
-        _format_info(
-            "Num checkpoints during training",
-            tot_nb_chckpts,
-        )
+    _pretty_info_log(
+        logger,
+        "Num checkpoints during training",
+        tot_nb_chckpts,
     )
-    logger.info(
-        _format_info(
-            "Num epochs between model evaluation",
-            args.eval_save_model_every_epochs,
-        )
+    _pretty_info_log(
+        logger,
+        "Num epochs between model evaluation",
+        args.eval_save_model_every_epochs,
     )
-    logger.info(
-        _format_info(
-            "Num generated images",
-            args.nb_generated_images,
-        )
+    _pretty_info_log(
+        logger,
+        "Num generated images",
+        args.nb_generated_images,
     )

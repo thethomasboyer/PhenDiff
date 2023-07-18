@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 from argparse import Namespace
+from pathlib import Path
 
 import torch
 from accelerate import Accelerator
@@ -50,7 +50,9 @@ def main(args: Namespace):
     accelerator_project_config = ProjectConfiguration(
         total_limit=args.checkpoints_total_limit,
         automatic_checkpoint_naming=False,
-        project_dir=args.output_dir,
+        project_dir=Path(
+            args.exp_output_dirs_parent_folder, args.experiment_name
+        ).as_posix(),
     )
 
     accelerator = Accelerator(
@@ -64,11 +66,9 @@ def main(args: Namespace):
     )
 
     # ------------------------------------- WandB ------------------------------------
-    # take the last part of the path as the project name
-    wandb_project_name = os.path.basename(os.path.normpath(args.output_dir))
-    logger.info(f"Logging to project {wandb_project_name}")
+    logger.info(f"Logging to project {args.experiment_name}")
     accelerator.init_trackers(
-        project_name=wandb_project_name,
+        project_name=args.experiment_name,
         config=vars(args),
     )
 
@@ -82,6 +82,11 @@ def main(args: Namespace):
         full_pipeline_save_folder,
         repo,
     ) = create_repo_structure(args, accelerator, logger)
+    accelerator.wait_for_everyone()
+
+    fidelity_cache_root: Path = Path(
+        args.exp_output_dirs_parent_folder, ".fidelity_cache"
+    )
 
     # ------------------------------------ Dataset -----------------------------------
     dataset, nb_classes = setup_dataset(args, logger)
@@ -300,6 +305,7 @@ def main(args: Namespace):
                 accelerator=accelerator,
                 pipeline=pipeline,
                 image_generation_tmp_save_folder=image_generation_tmp_save_folder,
+                fidelity_cache_root=fidelity_cache_root,
                 actual_eval_batch_sizes_for_this_process=actual_eval_batch_sizes_for_this_process,
                 epoch=epoch,
                 global_step=global_step,

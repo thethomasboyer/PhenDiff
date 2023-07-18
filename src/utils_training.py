@@ -53,15 +53,19 @@ def resume_from_checkpoint(
     num_update_steps_per_epoch: int,
     global_step: int,
 ) -> tuple[int, int, int]:
+    this_experiment_folder = Path(
+        args.exp_output_dirs_parent_folder, args.experiment_name
+    )
+
     if args.resume_from_checkpoint != "latest":
         path = os.path.basename(args.resume_from_checkpoint)
-        path = os.path.join(args.output_dir, "checkpoints", path)
+        path = os.path.join(this_experiment_folder, "checkpoints", path)
     else:
         # Get the most recent checkpoint
-        chckpnts_dir = Path(args.output_dir, "checkpoints")
+        chckpnts_dir = Path(this_experiment_folder, "checkpoints")
         if not Path.exists(chckpnts_dir) and accelerator.is_main_process:
             logger.warning(
-                f"No 'checkpoints' directory found in output_dir {args.output_dir}; creating one."
+                f"No 'checkpoints' directory found in experiment folder {this_experiment_folder}; creating one."
             )
             os.makedirs(chckpnts_dir)
         accelerator.wait_for_everyone()
@@ -485,13 +489,17 @@ def _syn_training_state(
     if global_step % args.checkpointing_steps == 0:
         # time to save a checkpoint!
         if accelerator.is_main_process:
+            this_experiment_folder = Path(
+                args.exp_output_dirs_parent_folder, args.experiment_name
+            )
+
             save_path = Path(
-                args.output_dir, "checkpoints", f"checkpoint_{global_step}"
+                this_experiment_folder, "checkpoints", f"checkpoint_{global_step}"
             )
             accelerator.save_state(save_path.as_posix())
             logger.info(f"Checkpointed step {global_step} at {save_path}")
             # Delete old checkpoints if needed
-            checkpoints_list = os.listdir(Path(args.output_dir, "checkpoints"))
+            checkpoints_list = os.listdir(Path(this_experiment_folder, "checkpoints"))
             nb_checkpoints = len(checkpoints_list)
             if nb_checkpoints > args.checkpoints_total_limit:
                 to_del = sorted(checkpoints_list, key=lambda x: int(x.split("_")[1]))[
@@ -503,7 +511,7 @@ def _syn_training_state(
                     )
                 for dir in to_del:
                     logger.info(f"Deleting {dir}...")
-                    rmtree(Path(args.output_dir, "checkpoints", dir))
+                    rmtree(Path(this_experiment_folder, "checkpoints", dir))
 
     return global_step
 
@@ -514,6 +522,7 @@ def generate_samples_and_compute_metrics(
     accelerator: Accelerator,
     pipeline: CustomStableDiffusionImg2ImgPipeline | ConditionalDDIMPipeline,
     image_generation_tmp_save_folder: Path,
+    fidelity_cache_root: Path,
     actual_eval_batch_sizes_for_this_process,
     epoch: int,
     global_step: int,
@@ -633,6 +642,7 @@ def generate_samples_and_compute_metrics(
                 class_name=class_name,
                 args=args,
                 image_generation_tmp_save_folder=image_generation_tmp_save_folder,
+                fidelity_cache_root=fidelity_cache_root,
                 accelerator=accelerator,
                 global_step=global_step,
                 main_metric_values=main_metric_values,
@@ -809,6 +819,7 @@ def _compute_log_metrics(
     class_name: str,
     args: Namespace,
     image_generation_tmp_save_folder: Path,
+    fidelity_cache_root: Path,
     accelerator: Accelerator,
     global_step: int,
     main_metric_values: list[float],
@@ -823,9 +834,8 @@ def _compute_log_metrics(
         fid=args.compute_fid,
         kid=args.compute_kid,
         verbose=False,
-        cache_root=".fidelity_cache",
+        cache_root=fidelity_cache_root,
         input1_cache_name=f"{class_name}",  # forces caching
-        rng_seed=42,
         kid_subset_size=args.kid_subset_size,
     )
 

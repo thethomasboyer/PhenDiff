@@ -105,10 +105,16 @@ def parse_args() -> Namespace:
         help="Whether to use the PyTorch ImageFolder loader instead of the HF Dataset loader. Usefull for folder symlinks...",
     )
     parser.add_argument(
-        "--output_dir",
+        "--exp_output_dirs_parent_folder",
         type=str,
         required=True,
-        help="The output directory where the model predictions and checkpoints will be written. Will be used as the WandB project name!",
+        help="The common parent directory of all the experiment-specific folders where the files/folders common to all experiments will be saved (e.g. Inceptionv3 checkpoints for FID computation).",
+    )
+    parser.add_argument(
+        "--experiment_name",
+        type=str,
+        required=True,
+        help="The name of the experiment. Will be used as the name of the experiment-specific folder (where the predictions and checkpoints will be written) and as the WandB project name",
     )
     parser.add_argument(
         "--cache_dir",
