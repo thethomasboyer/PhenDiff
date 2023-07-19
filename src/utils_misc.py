@@ -178,7 +178,9 @@ def create_repo_structure(
     # HF saves other things when downloading the pipeline (blobs, refs)
     # that we are not interested in(?), hence the two folders.
     # **This folder is shared between all experiments.**
-    initial_pipeline_save_folder = Path(".initial_pipeline_save")
+    initial_pipeline_save_folder = Path(
+        args.exp_output_dirs_parent_folder, ".initial_pipeline_save"
+    )
     if accelerator.is_main_process:
         os.makedirs(initial_pipeline_save_folder, exist_ok=True)
 

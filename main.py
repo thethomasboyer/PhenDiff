@@ -55,14 +55,21 @@ def main(args: Namespace):
         ).as_posix(),
     )
 
+    # unused parameters when unconditionally denoising samples in CLF guidance training for DDIM;
+    # not needed for SD as the HF code passes zeros instead of skipping the conditioning part of the network
+    # TODO: interesting to think about the implications of these two different methods!
+    kwargs_handlers = (
+        [DistributedDataParallelKwargs(find_unused_parameters=True)]
+        if args.model_type == "DDIM"
+        else None
+    )
+
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
         log_with=args.logger,
         project_config=accelerator_project_config,
-        kwargs_handlers=[DistributedDataParallelKwargs(find_unused_parameters=True)]
-        if args.model_type == "DDIM"
-        else None,
+        kwargs_handlers=kwargs_handlers,
     )
 
     # ------------------------------------- WandB ------------------------------------
@@ -70,6 +77,11 @@ def main(args: Namespace):
     accelerator.init_trackers(
         project_name=args.experiment_name,
         config=vars(args),
+        # save metadata to the "wandb" directory
+        # inside the *parent* folder common to all experiments
+        init_kwargs={
+            "wandb": {"dir": Path(args.exp_output_dirs_parent_folder, "wandb")}
+        },
     )
 
     # Make one log on every process with the configuration for debugging.
