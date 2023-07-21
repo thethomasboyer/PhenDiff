@@ -117,6 +117,11 @@ def parse_args() -> Namespace:
         help="The name of the experiment. Will be used as the name of the experiment-specific folder (where the predictions and checkpoints will be written) and as the WandB project name",
     )
     parser.add_argument(
+        "--run_name",
+        type=str,
+        help="The wandb run name. Generated at random by default.",
+    )
+    parser.add_argument(
         "--cache_dir",
         type=str,
         help="The directory where the downloaded models and datasets will be stored.",

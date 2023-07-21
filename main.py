@@ -79,7 +79,13 @@ def main(args: Namespace):
         config=vars(args),
         # save metadata to the "wandb" directory
         # inside the *parent* folder common to all experiments
-        init_kwargs={"wandb": {"dir": args.exp_output_dirs_parent_folder}},
+        init_kwargs={
+            "wandb": {
+                "dir": args.exp_output_dirs_parent_folder,
+                "name": args.run_name,
+                "save_code": True,
+            }
+        },
     )
 
     # Make one log on every process with the configuration for debugging.
