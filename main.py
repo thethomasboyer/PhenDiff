@@ -104,6 +104,10 @@ def main(args: Namespace):
         args.exp_output_dirs_parent_folder, ".fidelity_cache"
     )
 
+    # ------------------------------------ Checks ------------------------------------
+    if accelerator.is_main_process:
+        args_checker(args, logger)
+
     # ------------------------------------ Dataset -----------------------------------
     dataset, nb_classes = setup_dataset(args, logger)
 
@@ -114,13 +118,9 @@ def main(args: Namespace):
         num_workers=args.dataloader_num_workers,
     )
 
-    # ------------------------------------ Checks ------------------------------------
-    if accelerator.is_main_process:
-        args_checker(args, logger)
-
     # ------------------------------------ Debug -------------------------------------
     if args.debug:
-        modify_args_for_debug(logger, args, train_dataloader)
+        modify_args_for_debug(logger, args, len(train_dataloader))
         if accelerator.is_main_process:
             args_checker(args, logger)  # check again after debug modifications 😈
 

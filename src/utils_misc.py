@@ -247,7 +247,7 @@ def setup_xformers_memory_efficient_attention(
 
 
 def modify_args_for_debug(
-    logger: MultiProcessAdapter, args: Namespace, train_dataloader
+    logger: MultiProcessAdapter, args: Namespace, nb_tot_training_examples: int
 ) -> None:
     logger.warning("\033[1;33mDEBUG FLAG: MODIFYING PASSED ARGS\033[0m")
     args.eval_save_model_every_epochs = 1
@@ -258,7 +258,7 @@ def modify_args_for_debug(
     args.num_epochs = 3
     # 3 checkpoints during the debug training
     num_update_steps_per_epoch = ceil(
-        len(train_dataloader) / args.gradient_accumulation_steps
+        nb_tot_training_examples / args.gradient_accumulation_steps
     )
     max_train_steps = args.num_epochs * num_update_steps_per_epoch
     args.checkpointing_steps = max_train_steps // 3
