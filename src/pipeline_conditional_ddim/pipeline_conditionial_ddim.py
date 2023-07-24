@@ -97,8 +97,10 @@ class ConditionalDDIMPipeline(DiffusionPipeline):
         assert class_emb is None or (
             class_emb.ndim == 2 and class_emb.shape[0] == batch_size
         ), "class_emb must be a 2D tensor of shape (batch_size, emb_dim) if not None."
-        assert isinstance(w, float) or (
-            w.ndim == 1 and batch_size == w.shape[0]
+        assert (
+            isinstance(w, float)
+            or w is None
+            or (w.ndim == 1 and batch_size == w.shape[0])
         ), "w must be a 1D tensor of shape (batch_size,) if not a single float."
         if isinstance(generator, list) and len(generator) != batch_size:
             raise ValueError(

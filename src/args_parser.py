@@ -96,7 +96,12 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "--perc_samples",
         type=float,
-        help="The percentage of samples (∈ [0, 1]) to use from the training dataset *inside each class*.",
+        help="The percentage of samples (∈ ]0; 100]) to use from the training dataset *inside each class*.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        help="A seed to use, for the base random library only, to subsample the dataset if perc_samples is not None (or 100). Allows to resume runs with the same subset.",
     )
     parser.add_argument(
         "--use_pytorch_loader",
@@ -194,22 +199,23 @@ def parse_args() -> Namespace:
         "--kid_subset_size",
         type=int,
         default=1000,
-        help="Change this if generating very few images (for testing purposes only)",
+        help="Change this if generating very few images (<1000, for testing purposes only)",
     )
     parser.add_argument(
         "--guidance_factor",
         type=float,
-        required=True,
         help=(
-            "The scaling factor of the guidance ('ω' in the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf; "
-            "*not* the same definition that in the Classifier-Free Diffusion Guidance paper!). Set to <= 1 to disable guidance."
+            "The scaling factor of the guidance. WARNING: it corresponds to 'ω' in the Imagen paper (https://arxiv.org/pdf/2205.11487.pdf) *for SD* "
+            "and in the Classifier-Free Diffusion Guidance paper *for DDIM*, respectively. To disable guidance, set to <=1 for SD, and to =0 for DDIM. "
+            "The unguided generation is respectively *un*conditional for SD and conditional for DDIM. "
+            "Note: ω_Imagen = 1 + ω_CFDG. TODO: harmonize."
         ),
     )
     parser.add_argument(
         "--proba_uncond",
         type=float,
         default=0.1,
-        help="The probability of sampling unconditionally instead of conditionally for the CLF.",
+        help="The probability of sampling unconditionally instead of conditionally for the CLF. Set to 1 for unconditional generation only.",
     )
     parser.add_argument(
         "--class_embedding_dim",

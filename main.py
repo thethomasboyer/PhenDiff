@@ -109,7 +109,7 @@ def main(args: Namespace):
         args_checker(args, logger)
 
     # ------------------------------------ Dataset -----------------------------------
-    dataset, nb_classes = setup_dataset(args, logger)
+    dataset, raw_dataset, nb_classes = setup_dataset(args, logger)
 
     train_dataloader = torch.utils.data.DataLoader(
         dataset,
@@ -122,7 +122,7 @@ def main(args: Namespace):
     if args.debug:
         modify_args_for_debug(logger, args, len(train_dataloader))
         if accelerator.is_main_process:
-            args_checker(args, logger)  # check again after debug modifications 😈
+            args_checker(args, logger, False)  # check again after debug modifications 😈
 
     # --------------------------------- Load Pipeline --------------------------------
     # Download the full (possibly pretrained) pipeline
@@ -248,7 +248,7 @@ def main(args: Namespace):
         for batch_idx in range(total_dataloader_len):
             do_uncond_pass_across_all_procs[batch_idx] = (
                 torch.rand(1) < args.proba_uncond
-            )
+            )  # always true if proba_uncond == 1 as torch.rand -> [0;1[
         # broadcast tensor to all procs
         main_proc_rank = torch.distributed.get_rank()
         assert main_proc_rank == 0, f"Main proc rank is not 0 but {main_proc_rank}"
@@ -330,6 +330,7 @@ def main(args: Namespace):
                 nb_classes=nb_classes,
                 logger=logger,
                 dataset=dataset,
+                raw_dataset=raw_dataset,
                 best_metric=best_metric if accelerator.is_main_process else None,
             )
             # save model if best to date
