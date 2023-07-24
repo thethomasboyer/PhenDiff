@@ -71,7 +71,10 @@ def split(l, n, idx) -> list[int]:
     return l[idx]
 
 
-def args_checker(args: Namespace, logger: MultiProcessAdapter) -> None:
+def args_checker(
+    args: Namespace, logger: MultiProcessAdapter, first_check_pass: bool = True
+) -> None:
+    """Performs some checks on the passed arguments."""
     assert args.use_pytorch_loader, "Only PyTorch loader is supported for now."
 
     if args.dataset_name is None and args.train_data_dir is None:
@@ -79,10 +82,33 @@ def args_checker(args: Namespace, logger: MultiProcessAdapter) -> None:
         msg += "or a train data directory."
         raise ValueError(msg)
 
-    if args.guidance_factor <= 1:
+    if (
+        isinstance(args.guidance_factor, float)
+        and args.guidance_factor <= 1
+        and args.model_type == "StableDiffusion"
+        and first_check_pass
+    ):
         logger.warning(
             "The guidance factor is <= 1: classifier free guidance will not be performed"
         )
+
+    if args.proba_uncond == 1 and first_check_pass:
+        logger.warning(
+            "The probability of unconditional pass is 1: the model will be trained unconditionally"
+        )
+
+        match args.model_type:
+            case "DDIM":
+                assert (
+                    args.guidance_factor is None
+                ), "The guidance factor must be None for unconditional training"
+            case "StableDiffusion":
+                raise NotImplementedError("Need to check this")
+
+    if args.proba_uncond != 1:
+        assert isinstance(
+            args.proba_uncond, float
+        ), "proba_uncond must be a float if conditional training is performed (i.e. proba_uncond != 1)"
 
     if args.compute_kid and (args.nb_generated_images < args.kid_subset_size):
         if args.debug:
@@ -95,7 +121,7 @@ def args_checker(args: Namespace, logger: MultiProcessAdapter) -> None:
     if args.gradient_accumulation_steps != 1:
         raise NotImplementedError("Gradient accumulation is not yet supported; TODO!")
 
-    if args.gradient_accumulation_steps > 1:
+    if args.gradient_accumulation_steps > 1 and first_check_pass:
         logger.warning(
             "Gradient accumulation may (probably) fail as the class embedding is not wrapped inside `accelerate.accumulate` context manager; TODO!"
         )
@@ -139,7 +165,12 @@ def args_checker(args: Namespace, logger: MultiProcessAdapter) -> None:
     )
 
     if args.perc_samples is not None:
-        assert 0 <= args.perc_samples <= 1, "perc_samples must be in [0, 1]"
+        assert 0 < args.perc_samples <= 100, "perc_samples must be in ]0; 100]"
+
+        if args.seed is None and first_check_pass:
+            logger.warning(
+                "\033[1;33mSUBSAMPLING THE DATASET BUT NO SEED PROVIDED; RESUMING THIS RUN WILL NOT BE POSSIBLE\033[0m\n"
+            )
 
 
 def create_repo_structure(
@@ -269,10 +300,11 @@ def is_it_best_model(
     main_metric_values: list[float],
     best_metric: float,
     logger: MultiProcessAdapter,
+    args: Namespace
 ) -> tuple[bool, float]:
     current_value = np.mean(main_metric_values)
     if current_value < best_metric:
-        logger.info(f"New best model with metric {current_value}")
+        logger.info(f"New best model with metric {args.main_metric}={current_value}")
         best_metric = current_value
         best_model_to_date = True
     else:

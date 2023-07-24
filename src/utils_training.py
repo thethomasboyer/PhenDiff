@@ -19,6 +19,7 @@ from math import ceil
 from pathlib import Path
 from shutil import rmtree
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 import torch_fidelity
@@ -27,6 +28,7 @@ from accelerate.logging import MultiProcessAdapter
 from diffusers import DDIMScheduler, UNet2DConditionModel
 from diffusers.training_utils import EMAModel
 from PIL.Image import Image
+from torch.utils.data import Subset
 from torchvision.datasets import ImageFolder
 from tqdm.auto import tqdm
 
@@ -221,7 +223,7 @@ def perform_training_epoch(
             # Convert images to latent space
             clean_images = autoencoder_model.encode(clean_images).latent_dist.sample()
             clean_images = clean_images * autoencoder_model.config.scaling_factor
-            # TODO: what is this ↑?
+            # TODO: ↑ why?
 
         # Sample noise that we'll add to the images
         noise = torch.randn(clean_images.shape).to(clean_images.device)
@@ -483,6 +485,7 @@ def _syn_training_state(
             if module_name in components_to_train_transcribed:
                 ema_models[module_name].step(module.parameters())
 
+    # update the step counters
     progress_bar.update()
     global_step += 1
 
@@ -530,7 +533,8 @@ def generate_samples_and_compute_metrics(
     components_to_train_transcribed: list[str],
     nb_classes: int,
     logger: MultiProcessAdapter,
-    dataset: ImageFolder,
+    dataset: ImageFolder | Subset,
+    raw_dataset: ImageFolder | Subset,
     best_metric: float | None,
 ) -> tuple[bool | None, float | None]:
     # 1. Progress bar
@@ -577,6 +581,10 @@ def generate_samples_and_compute_metrics(
     # (only instantiated on main process as metrics are themselves computed on main process only)
     if accelerator.is_main_process:
         main_metric_values = []
+
+    # only one gen pass if unconditional model
+    if args.proba_uncond == 1:
+        nb_classes = 1
 
     # 5. Run pipeline in inference (sample random noise and denoise)
     # Generate args.nb_generated_images in batches *per class*
@@ -640,12 +648,14 @@ def generate_samples_and_compute_metrics(
             _compute_log_metrics(
                 logger=logger,
                 class_name=class_name,
+                class_label=class_label,
                 args=args,
                 image_generation_tmp_save_folder=image_generation_tmp_save_folder,
                 fidelity_cache_root=fidelity_cache_root,
                 accelerator=accelerator,
                 global_step=global_step,
                 main_metric_values=main_metric_values,
+                raw_dataset=raw_dataset,
             )
 
         # resync everybody for each class
@@ -654,7 +664,7 @@ def generate_samples_and_compute_metrics(
     # 6. Check if it is the best model to date
     if accelerator.is_main_process:
         best_model_to_date, best_metric = is_it_best_model(
-            main_metric_values, best_metric, logger
+            main_metric_values, best_metric, logger, args
         )
     else:
         best_model_to_date = None
@@ -761,10 +771,10 @@ def _generate_save_images_for_this_class_DDIM(
     # loop over eval batches for this process
     for batch_idx, actual_bs in enumerate(actual_eval_batch_sizes_for_this_process):
         if args.proba_uncond == 1:
+            class_labels = None
             class_emb = torch.zeros(
                 (actual_bs, accelerator.unwrap_model(pipeline.unet).time_embed_dim)
             ).to(accelerator.device)
-            class_labels = None
         else:
             class_labels = torch.full(
                 (actual_bs,), class_label, device=pipeline.device
@@ -817,16 +827,32 @@ def _generate_save_images_for_this_class_DDIM(
 def _compute_log_metrics(
     logger: MultiProcessAdapter,
     class_name: str,
+    class_label: int,
     args: Namespace,
     image_generation_tmp_save_folder: Path,
     fidelity_cache_root: Path,
     accelerator: Accelerator,
     global_step: int,
     main_metric_values: list[float],
+    raw_dataset: ImageFolder | Subset,
 ) -> None:
-    logger.info(f"Computing metrics for class {class_name}...")
+    # log the start of metrics computation
+    if args.proba_uncond == 1:
+        msg = f"Computing metrics for unconditional generation..."
+    else:
+        msg = f"Computing metrics for class {class_name}..."
+    logger.info(msg)
+
+    # extract a subset of the raw dataset for this class only if applicable
+    if args.proba_uncond != 1:
+        indices_this_class = np.nonzero(np.array(raw_dataset.targets) == class_label)[0]
+        real_images_this_class = Subset(raw_dataset, list(indices_this_class))
+    else:
+        real_images_this_class = raw_dataset
+
+    # perform metrics computation
     metrics_dict = torch_fidelity.calculate_metrics(
-        input1=args.train_data_dir + "/train" + f"/{class_name}",
+        input1=real_images_this_class,
         input2=image_generation_tmp_save_folder.as_posix(),
         cuda=True,
         batch_size=args.eval_batch_size,
@@ -837,6 +863,7 @@ def _compute_log_metrics(
         cache_root=fidelity_cache_root,
         input1_cache_name=f"{class_name}",  # forces caching
         kid_subset_size=args.kid_subset_size,
+        samples_find_deep=args.proba_uncond == 1,
     )
 
     for metric_name, metric_value in metrics_dict.items():
