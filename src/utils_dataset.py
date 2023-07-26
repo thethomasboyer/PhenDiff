@@ -24,6 +24,28 @@ from torchvision import transforms
 from torchvision.datasets import ImageFolder
 
 
+class NoLabelsDataset(ImageFolder):
+    """A custom dataset that only returns the images, without their labels."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+    def __getitem__(self, index: int):
+        """
+        Args:
+            index (int): Index
+
+        Returns:
+            sample
+        """
+        path, target = self.samples[index]
+        sample = self.loader(path)
+        if self.transform is not None:
+            sample = self.transform(sample)
+
+        return sample
+
+
 def setup_dataset(
     args: Namespace, logger: MultiProcessAdapter
 ) -> tuple[ImageFolder | Subset, ImageFolder | Subset, int]:
@@ -46,7 +68,7 @@ def setup_dataset(
             transform=lambda x: transformations(x.convert("RGB")),
             target_transform=lambda y: torch.tensor(y).long(),
         )
-        raw_dataset: Dataset | Subset = ImageFolder(
+        raw_dataset: NoLabelsDataset | Subset = NoLabelsDataset(
             root=Path(args.train_data_dir, args.split).as_posix(),
             transform=lambda x: raw_transformations(x.convert("RGB")),
         )
@@ -105,7 +127,7 @@ def setup_dataset(
 
 
 def select_subset_of_dataset(
-    dataset: ImageFolder, raw_dataset: ImageFolder, args: Namespace
+    dataset: ImageFolder, raw_dataset: NoLabelsDataset, args: Namespace
 ) -> tuple[Subset, Subset]:
     """Subsamples the given dataset to have <perc_samples>% of each class."""
 
