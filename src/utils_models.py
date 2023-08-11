@@ -69,6 +69,7 @@ def _load_custom_SD(
     initial_pipeline_save_path = StableDiffusionImg2ImgPipeline.download(
         args.pretrained_model_name_or_path,
         cache_dir=initial_pipeline_save_folder,
+        local_files_only=True,
     )
 
     # 2. Customize the pipeline components
