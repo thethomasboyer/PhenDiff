@@ -38,6 +38,8 @@ from src.custom_embedding import CustomEmbedding
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
+DEFAULT_GUIDANCE_SCALE = 7.5
+
 
 class CustomStableDiffusionImg2ImgPipeline(DiffusionPipeline):
     r"""
@@ -309,6 +311,7 @@ class CustomStableDiffusionImg2ImgPipeline(DiffusionPipeline):
         class_labels_embeds,
         latent_shape,
         image,
+        guidance_scale: float | None,
     ):
         if image is None and latent_shape is None:
             raise ValueError(
@@ -356,6 +359,11 @@ class CustomStableDiffusionImg2ImgPipeline(DiffusionPipeline):
 
         if isinstance(class_labels, torch.Tensor) and class_labels.ndim != 1:
             raise ValueError("If a Tensor `class_labels` should be 1D")
+
+        if not isinstance(guidance_scale, float) and guidance_scale is not None:
+            raise ValueError(
+                f"`guidance_scale` has to be of type `float` or `None` but is {type(guidance_scale)}"
+            )
 
     def get_timesteps(self, num_inference_steps, strength, device):
         # get the original timestep using init_timestep
@@ -442,7 +450,7 @@ class CustomStableDiffusionImg2ImgPipeline(DiffusionPipeline):
         class_labels: Optional[Union[int, List[int], torch.Tensor]] = None,
         strength: float = 0.8,
         num_inference_steps: Optional[int] = 50,
-        guidance_scale: Optional[float] = 7.5,
+        guidance_scale: Optional[float] = DEFAULT_GUIDANCE_SCALE,
         eta: Optional[float] = 0.0,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         class_labels_embeds: Optional[torch.FloatTensor] = None,
@@ -551,6 +559,7 @@ class CustomStableDiffusionImg2ImgPipeline(DiffusionPipeline):
             class_labels_embeds=class_labels_embeds,
             latent_shape=latent_shape,
             image=image,
+            guidance_scale=guidance_scale,
         )
 
         # 2. Define call parameters
@@ -576,6 +585,8 @@ class CustomStableDiffusionImg2ImgPipeline(DiffusionPipeline):
         # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`
         # corresponds to doing no classifier free guidance, and for HF guidance_scale <= 1
         # also means no CLF
+        if guidance_scale is None:
+            guidance_scale = DEFAULT_GUIDANCE_SCALE
         do_classifier_free_guidance = guidance_scale > 1.0
 
         # 3. Encode input prompt
