@@ -4,9 +4,9 @@
 	"act_fn": "silu",
 	"attention_head_dim": 8,
 	"block_out_channels": [
-		32,
 		64,
-		128
+		128,
+		256
 	],
 	"center_input_sample": false,
 	"class_embed_type": null,
