@@ -8,5 +8,6 @@
 	"clip_sample_range": 1.0,
 	"num_train_timesteps": 3000,
 	"prediction_type": "v_prediction",
-	"rescale_betas_zero_snr": true
+	"rescale_betas_zero_snr": true,
+    "timestep_spacing": "trailing"
 }
