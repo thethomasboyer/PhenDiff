@@ -16,13 +16,12 @@ from argparse import Namespace
 from pathlib import Path
 
 import torch
+import wandb
 from accelerate import Accelerator
 from accelerate.logging import MultiProcessAdapter, get_logger
 from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import EMAModel
-
-import wandb
 from src.args_parser import parse_args
 from src.utils_dataset import setup_dataset
 from src.utils_misc import (
@@ -103,6 +102,11 @@ def main(args: Namespace):
     fidelity_cache_root: Path = Path(
         args.exp_output_dirs_parent_folder, ".fidelity_cache"
     )
+
+    torch_hub_cache_dir: Path = Path(
+        args.exp_output_dirs_parent_folder, ".torch_hub_cache"
+    )
+    torch.hub.set_dir(torch_hub_cache_dir)
 
     # ------------------------------------ Checks ------------------------------------
     if accelerator.is_main_process:
