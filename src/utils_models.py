@@ -36,7 +36,7 @@ def load_initial_pipeline(
         match args.model_type:
             case "StableDiffusion":
                 pipeline = _load_custom_SD(
-                    args, initial_pipeline_save_folder, logger, nb_classes, accelerator
+                    args, initial_pipeline_save_folder, nb_classes, accelerator
                 )
             case "DDIM":
                 raise NotImplementedError("TODO: test this")
@@ -61,7 +61,6 @@ def load_initial_pipeline(
 def _load_custom_SD(
     args: Namespace,
     initial_pipeline_save_folder: Path,
-    logger: MultiProcessAdapter,
     nb_classes: int,
     accelerator: Accelerator,
 ) -> CustomStableDiffusionImg2ImgPipeline:
@@ -87,7 +86,7 @@ def _load_custom_SD(
     denoiser_model_kwarg = {"denoiser_model": denoiser_model} if denoiser_model else {}
     # noise scheduler
     noise_scheduler = _load_and_override_noise_scheduler(
-        args, logger, initial_pipeline_save_path, accelerator
+        args, initial_pipeline_save_path, accelerator
     )
     # custom class embedding: create a custom class inheriting from diffusers.ModelMixin
     # in order to use Hugging Face's routines
@@ -102,33 +101,39 @@ def _load_custom_SD(
         class_embedding=class_embedding,
         **denoiser_model_kwarg,
     )
-    return pipeline
 
-
-def _load_custom_DDIM(
-    args: Namespace,
-    initial_pipeline_save_folder: Path,
-    logger: MultiProcessAdapter,
-    accelerator: Accelerator,
-):
-    # 1. Download the pipeline in initial_pipeline_save_folder
-    initial_pipeline_save_path = ConditionalDDIMPipeline.download(
-        args.pretrained_model_name_or_path,
-        cache_dir=initial_pipeline_save_folder,
-    )
-
-    # 2. Customize the pipeline components
-    # noise scheduler
-    noise_scheduler = _load_and_override_noise_scheduler(
-        args, logger, initial_pipeline_save_path, accelerator
-    )
-
-    # 3 Create the final pipeline
-    pipeline = ConditionalDDIMPipeline.from_pretrained(
-        initial_pipeline_save_path, local_files_only=True, scheduler=noise_scheduler
-    )
+    # 4. Log the final denoiser config
+    if accelerator.is_main_process:
+        wandb_tracker = accelerator.get_tracker("wandb", unwrap=True)
+        wandb_tracker.config["denoiser_model_config"] = pipeline.unet.config
 
     return pipeline
+
+
+# def _load_custom_DDIM(
+#     args: Namespace,
+#     initial_pipeline_save_folder: Path,
+#     logger: MultiProcessAdapter,
+#     accelerator: Accelerator,
+# ):
+#     # 1. Download the pipeline in initial_pipeline_save_folder
+#     initial_pipeline_save_path = ConditionalDDIMPipeline.download(
+#         args.pretrained_model_name_or_path,
+#         cache_dir=initial_pipeline_save_folder,
+#     )
+
+#     # 2. Customize the pipeline components
+#     # noise scheduler
+#     noise_scheduler = _load_and_override_noise_scheduler(
+#         args, initial_pipeline_save_path, accelerator
+#     )
+
+#     # 3 Create the final pipeline
+#     pipeline = ConditionalDDIMPipeline.from_pretrained(
+#         initial_pipeline_save_path, local_files_only=True, scheduler=noise_scheduler
+#     )
+
+#     return pipeline
 
 
 def _load_custom_DDIM_from_scratch(
@@ -138,6 +143,7 @@ def _load_custom_DDIM_from_scratch(
     denoiser_model_config = CustomCondUNet2DModel.load_config(
         args.denoiser_config_path,
     )
+    # Log the final denoiser config
     if accelerator.is_main_process:
         wandb_tracker = accelerator.get_tracker("wandb", unwrap=True)
         wandb_tracker.config["denoiser_model_config"] = denoiser_model_config
@@ -145,9 +151,7 @@ def _load_custom_DDIM_from_scratch(
         denoiser_model_config,
     )
     # Load noise scheduler from config & overide it
-    noise_scheduler = _load_and_override_noise_scheduler(
-        args, logger, None, accelerator
-    )
+    noise_scheduler = _load_and_override_noise_scheduler(args, None, accelerator)
     # Assemble pipeline
     pipeline = ConditionalDDIMPipeline(unet=denoiser_model, scheduler=noise_scheduler)
     return pipeline
@@ -156,46 +160,59 @@ def _load_custom_DDIM_from_scratch(
 # ---------------------------------------------- Components ---------------------------------------------
 def _load_and_override_noise_scheduler(
     args: Namespace,
-    logger: MultiProcessAdapter,
-    initial_pipeline_save_path: Path | None,
+    initial_pipeline_save_path: Path | str | None,
     accelerator: Accelerator,
 ) -> DDIMScheduler:
-    # if relevant args are None then use the "pretrained" values
-    noise_scheduler_kwargs = [
+    """Order of precedence for noise scheduler configs, from highest priority to lowest priority:
+    1. kwargs given in CL
+    2. config file passed with the `noise_scheduler_config_path` CL argument
+    3. config file from the pretrained model, if applicable
+    """
+    # 1. If pretrained model, then first load the config passed with the `noise_scheduler_config_path` CL argument if applicable
+    if args.pretrained_model_name_or_path is not None:
+        cstm_config: dict = DDIMScheduler.load_config(
+            args.noise_scheduler_config_path,
+        )
+    else:
+        cstm_config = {}
+
+    # 2. Override this with the CL args
+    CL_noise_scheduler_kwargs = [
         "num_train_timesteps",
         "beta_start",
         "beta_end",
         "beta_schedule",
         "prediction_type",
     ]
-    noise_scheduler_kwargs_vals = {
+    # only take the kwargs that are not None
+    CL_noise_scheduler_kwargs_vals = {
         k: v
         for k, v in vars(args).items()
-        if k in noise_scheduler_kwargs and v is not None
-    }  # only overwrite if not None
-    if noise_scheduler_kwargs_vals != {}:
-        logger.warning(
-            f"\033[1;33mWILL OVERWRITE THE FOLLOWING NOISE SCHEDULER KWARGS:\033[0m\n {noise_scheduler_kwargs_vals}\n"
-        )
+        if k in CL_noise_scheduler_kwargs and v is not None
+    }
+    # now override the possibly empty cstm_config
+    cstm_config.update(CL_noise_scheduler_kwargs_vals)
 
-    # now load scheduler
+    # 3. Load scheduler, overriding its config
     if args.pretrained_model_name_or_path is not None:
         noise_scheduler: DDIMScheduler = DDIMScheduler.from_pretrained(
             initial_pipeline_save_path,
             subfolder="scheduler",
             local_files_only=True,
-            **noise_scheduler_kwargs_vals,
+            **cstm_config,
         )
     else:
         noise_scheduler_config = DDIMScheduler.load_config(
             args.noise_scheduler_config_path,
         )
-        if accelerator.is_main_process:
-            wandb_tracker = accelerator.get_tracker("wandb", unwrap=True)
-            wandb_tracker.config["noise_scheduler_config"] = noise_scheduler_config
         noise_scheduler: DDIMScheduler = DDIMScheduler.from_config(
             noise_scheduler_config,
-            **noise_scheduler_kwargs_vals,
+            **cstm_config,
         )
+
+    # 4 Log the *final* config
+    if accelerator.is_main_process:
+        wandb_tracker = accelerator.get_tracker("wandb", unwrap=True)
+        wandb_tracker.config["noise_scheduler_config"] = noise_scheduler.config
 
     return noise_scheduler

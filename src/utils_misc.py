@@ -148,21 +148,22 @@ def args_checker(
             "Cannot set both pretrained_model_name_or_path and denoiser_config_path"
         )
 
-    # Either give a pretrained model, or a config for both denoiser and scheduler
-    # TODO: adapt this to support LDM *not* pulled from a pretrained model
-    assert (
-        args.pretrained_model_name_or_path is None
-        and (
+    # TODO: adapt below to support LDM *not* pulled from a pretrained model
+    # TODO: adapt below to support DDIM pulled from a pretrained model
+
+    if args.pretrained_model_name_or_path is None:
+        assert (
             args.noise_scheduler_config_path is not None
             and args.denoiser_config_path is not None
-        )
-    ) or (
+        ), "If not using a pretrained model, a config must be provided for both the denoiser and noise scheduler"
+
+    if (
         args.pretrained_model_name_or_path is not None
-        and (
-            args.noise_scheduler_config_path is None
-            and args.denoiser_config_path is None
-        )
-    )
+        and not args.learn_denoiser_from_scratch
+    ):
+        assert (
+            args.denoiser_config_path is None
+        ), "Cannot provide a denoiser config for now when a pretrained model is used and the denoiser is not learned from scratch"
 
     if args.perc_samples is not None:
         assert 0 < args.perc_samples <= 100, "perc_samples must be in ]0; 100]"
@@ -300,7 +301,7 @@ def is_it_best_model(
     main_metric_values: list[float],
     best_metric: float,
     logger: MultiProcessAdapter,
-    args: Namespace
+    args: Namespace,
 ) -> tuple[bool, float]:
     current_value = np.mean(main_metric_values)
     if current_value < best_metric:
