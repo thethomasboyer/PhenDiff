@@ -65,7 +65,8 @@ def _load_custom_SD(
     nb_classes: int,
     accelerator: Accelerator,
 ) -> CustomStableDiffusionImg2ImgPipeline:
-    # 1. Download the pipeline in initial_pipeline_save_folder
+    # 1. *Locate* the pipeline in initial_pipeline_save_folder
+    # (no download is actually performed; the downloaded pipeline should already be there)
     initial_pipeline_save_path = StableDiffusionImg2ImgPipeline.download(
         args.pretrained_model_name_or_path,
         cache_dir=initial_pipeline_save_folder,
