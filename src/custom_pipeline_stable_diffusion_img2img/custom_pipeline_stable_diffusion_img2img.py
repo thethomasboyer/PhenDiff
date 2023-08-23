@@ -691,7 +691,7 @@ class CustomStableDiffusionImg2ImgPipeline(DiffusionPipeline):
 
         image = self.image_processor.postprocess(
             image,
-            output_type=output_type.rstrip("+latent"),
+            output_type=output_type.removesuffix("+latent"),
             do_denormalize=do_denormalize,
         )
 
