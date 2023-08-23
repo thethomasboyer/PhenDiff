@@ -48,9 +48,9 @@ class ConditionalDDIMPipeline(DiffusionPipeline):
     def __call__(
         self,
         class_labels: torch.Tensor | None,
-        class_emb: torch.Tensor | None,
-        w: float | torch.Tensor | None,
-        batch_size: int = 1,
+        class_emb: torch.Tensor | None = None,
+        w: float | torch.Tensor | None = None,
+        batch_size: int = 1, # TODO: remove this arg
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         eta: float = 0.0,
         num_inference_steps: int = DEFAULT_NUM_INFERENCE_STEPS,
