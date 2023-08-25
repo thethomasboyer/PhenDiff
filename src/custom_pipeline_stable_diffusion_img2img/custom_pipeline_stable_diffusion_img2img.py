@@ -311,7 +311,7 @@ class CustomStableDiffusionImg2ImgPipeline(DiffusionPipeline):
         class_labels_embeds,
         latent_shape,
         image,
-        guidance_scale: float | None,
+        guidance_scale: torch.Tensor | float | None,
     ):
         if image is None and latent_shape is None:
             raise ValueError(
@@ -360,10 +360,17 @@ class CustomStableDiffusionImg2ImgPipeline(DiffusionPipeline):
         if isinstance(class_labels, torch.Tensor) and class_labels.ndim != 1:
             raise ValueError("If a Tensor `class_labels` should be 1D")
 
-        if not isinstance(guidance_scale, float) and guidance_scale is not None:
+        if (
+            not isinstance(guidance_scale, float)
+            and not isinstance(guidance_scale, torch.Tensor)
+            and guidance_scale is not None
+        ):
             raise ValueError(
-                f"`guidance_scale` has to be of type `float` or `None` but is {type(guidance_scale)}"
+                f"`guidance_scale` has to be of type `float` or `Tensor` or `None` but is {type(guidance_scale)}"
             )
+
+        if isinstance(guidance_scale, torch.Tensor):
+            assert guidance_scale.ndim == 1, "If a Tensor `guidance_scale` should be 1D"
 
     def get_timesteps(self, num_inference_steps, strength, device):
         # get the original timestep using init_timestep
@@ -450,7 +457,7 @@ class CustomStableDiffusionImg2ImgPipeline(DiffusionPipeline):
         class_labels: Optional[Union[int, List[int], torch.Tensor]] = None,
         strength: float = 0.8,
         num_inference_steps: Optional[int] = 50,
-        guidance_scale: Optional[float] = DEFAULT_GUIDANCE_SCALE,
+        guidance_scale: Optional[Union[float, torch.Tensor]] = DEFAULT_GUIDANCE_SCALE,
         eta: Optional[float] = 0.0,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         class_labels_embeds: Optional[torch.FloatTensor] = None,
@@ -502,7 +509,7 @@ class CustomStableDiffusionImg2ImgPipeline(DiffusionPipeline):
                 The number of denoising steps. More denoising steps usually lead to a higher quality image at the
                 expense of slower inference. This parameter will be modulated by `strength`.
 
-            - guidance_scale (`float`, *optional*, defaults to 7.5)
+            - guidance_scale (`float` or `Tensor`, *optional*, defaults to 7.5)
 
                 Guidance scale as defined in [Classifier-Free Diffusion Guidance](https://arxiv.org/abs/2207.12598).
                 `guidance_scale` is defined as `w` of equation 2. of [Imagen
@@ -587,7 +594,11 @@ class CustomStableDiffusionImg2ImgPipeline(DiffusionPipeline):
         # also means no CLF
         if guidance_scale is None:
             guidance_scale = DEFAULT_GUIDANCE_SCALE
-        do_classifier_free_guidance = guidance_scale > 1.0
+        if isinstance(guidance_scale, torch.Tensor):
+            # assume we do guidance scale if guidance_scale is a tensor
+            do_classifier_free_guidance = True
+        else:
+            do_classifier_free_guidance = guidance_scale > 1.0
 
         # 3. Encode input prompt
         lora_scale = (
@@ -634,6 +645,10 @@ class CustomStableDiffusionImg2ImgPipeline(DiffusionPipeline):
             latent_shape=latent_shape,
             generator=generator,
         )
+
+        # cast guidance_scale to the correct dim for torch op
+        if isinstance(guidance_scale, torch.Tensor):
+            guidance_scale = guidance_scale.view(guidance_scale.shape[0], 1, 1, 1)
 
         # 7. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
