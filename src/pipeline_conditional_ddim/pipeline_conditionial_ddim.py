@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import List, Optional, Tuple, Union
+from typing import List, Literal, Optional, Tuple, Union
 
 import torch
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline, ImagePipelineOutput
@@ -44,19 +44,57 @@ class ConditionalDDIMPipeline(DiffusionPipeline):
 
         self.register_modules(unet=unet, scheduler=scheduler)
 
+    def check_inputs(
+        self,
+        batch_size: int,
+        class_labels: Optional[torch.Tensor] = None,
+        class_emb: Optional[torch.Tensor] = None,
+        w: Optional[Union[float, torch.Tensor]] = None,
+        generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+        frac_diffusion_skipped: Optional[float] = None,
+        start_image: Optional[torch.Tensor] = None,
+    ) -> None:
+        assert class_labels is None or (
+            class_labels.ndim == 1 and batch_size == class_labels.shape[0]
+        ), "class_labels must be a 1D tensor of shape (batch_size,) if not None."
+        assert class_emb is None or (
+            class_emb.ndim == 2 and class_emb.shape[0] == batch_size
+        ), "class_emb must be a 2D tensor of shape (batch_size, emb_dim) if not None."
+        assert (
+            isinstance(w, float)
+            or w is None
+            or (w.ndim == 1 and batch_size == w.shape[0])
+        ), "w must be a 1D tensor of shape (batch_size,) if not a single float."
+        if isinstance(generator, list) and len(generator) != batch_size:
+            raise ValueError(
+                f"You have passed a list of generators of length {len(generator)}, but requested an effective batch"
+                f" size of {batch_size}. Make sure the batch size matches the length of the generators."
+            )
+        assert (frac_diffusion_skipped is not None and start_image is not None) or (
+            frac_diffusion_skipped is None and start_image is None
+        ), "Either pass both frac_diffusion_skipped and start_image or none of them."
+        if frac_diffusion_skipped is not None:
+            assert (
+                isinstance(frac_diffusion_skipped, float)
+                and 0 <= frac_diffusion_skipped <= 1
+            ), "frac_diffusion_skipped must be a float between 0 and 1."
+
     @torch.no_grad()
     def __call__(
         self,
         class_labels: torch.Tensor | None,
         class_emb: torch.Tensor | None = None,
-        w: float | torch.Tensor | None = None,
-        batch_size: int = 1, # TODO: remove this arg
+        w: int | float | torch.Tensor | None = None,
+        batch_size: int = 1,  # TODO: remove this arg
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         eta: float = 0.0,
         num_inference_steps: int = DEFAULT_NUM_INFERENCE_STEPS,
         use_clipped_model_output: Optional[bool] = None,
         output_type: Optional[str] = "pil",
         return_dict: bool = True,
+        start_image: Optional[torch.Tensor] = None,
+        frac_diffusion_skipped: Optional[float] = None,
+        guidance_eqn: Literal["imagen", "CFG"] = "imagen",
     ) -> Union[ImagePipelineOutput, Tuple]:
         r"""
         Args:
@@ -64,8 +102,8 @@ class ConditionalDDIMPipeline(DiffusionPipeline):
                 The class labels to condition on. Should be a tensor of shape `(batch_size,)` or `None` if `class_emb` is directly given.
             class_emb (`torch.Tensor` or None):
                 The class embeddings to condition on. Should be None if class_labels are passed or a tensor of shape `(batch_size, emb_dim)` otherwise.
-            w (`float` or `torch.Tensor` or None):
-                The guidance factor. Should be None, or a float or a tensor of shape `(batch_size,)` with postive values.
+            w (`int` or `float` or `torch.Tensor` or None):
+                The guidance factor. Should be None, or a int/float or a tensor of shape `(batch_size,)` of postive value(s).
             batch_size (`int`, *optional*, defaults to 1):
                 The number of images to generate.
             generator (`torch.Generator`, *optional*):
@@ -84,6 +122,15 @@ class ConditionalDDIMPipeline(DiffusionPipeline):
                 [PIL](https://pillow.readthedocs.io/en/stable/): `PIL.Image.Image` or `np.array`.
             return_dict (`bool`, *optional*, defaults to `True`):
                 Whether or not to return a [`~pipelines.ImagePipelineOutput`] instead of a plain tuple.
+            start_image (`torch.Tensor`, *optional*, defaults to `None`):
+                A starting image to use for the diffusion process. If `None`, a random image is generated.
+                `frac_diffusion_skipped` must be passed if `start_image` is not `None`.
+            frac_diffusion_skipped (`float`, *optional*, defaults to `None`):
+                The fraction of the diffusion process at. Must be passed if `start_image` is not `None`.
+                Should be between 0 and 1.
+            guidance_eqn (`Literal["imagen", "CFG"]`, *optional*, defaults to `"imagen"`):
+                What guidance equation to use. Can be either that of the [Imagen](https://arxiv.org/pdf/2205.11487.pdf#subsection.2.2) paper 
+                or that of the original [Classifier-Free Diffusion Guidance](https://arxiv.org/pdf/2207.12598.pdf#equation.3.6) paper.
 
         Returns:
             [`~pipelines.ImagePipelineOutput`] or `tuple`: [`~pipelines.utils.ImagePipelineOutput`] if `return_dict` is
@@ -91,22 +138,15 @@ class ConditionalDDIMPipeline(DiffusionPipeline):
         """
 
         # Checks
-        assert class_labels is None or (
-            class_labels.ndim == 1 and batch_size == class_labels.shape[0]
-        ), "class_labels must be a 1D tensor of shape (batch_size,) if not None."
-        assert class_emb is None or (
-            class_emb.ndim == 2 and class_emb.shape[0] == batch_size
-        ), "class_emb must be a 2D tensor of shape (batch_size, emb_dim) if not None."
-        assert (
-            isinstance(w, float)
-            or w is None
-            or (w.ndim == 1 and batch_size == w.shape[0])
-        ), "w must be a 1D tensor of shape (batch_size,) if not a single float."
-        if isinstance(generator, list) and len(generator) != batch_size:
-            raise ValueError(
-                f"You have passed a list of generators of length {len(generator)}, but requested an effective batch"
-                f" size of {batch_size}. Make sure the batch size matches the length of the generators."
-            )
+        self.check_inputs(
+            batch_size,
+            class_labels,
+            class_emb,
+            w,
+            generator,
+            frac_diffusion_skipped,
+            start_image,
+        )
 
         if num_inference_steps is None:
             # None means default value
@@ -127,14 +167,33 @@ class ConditionalDDIMPipeline(DiffusionPipeline):
                 *self.unet.config.sample_size,
             )
 
-        image = randn_tensor(
-            image_shape, generator=generator, device=self.device, dtype=self.unet.dtype
-        )
+        if start_image is not None:
+            image = start_image
+        else:
+            image = randn_tensor(
+                image_shape,
+                generator=generator,
+                device=self.device,
+                dtype=self.unet.dtype,
+            )
 
-        # set step values
+        # Set step values
         self.scheduler.set_timesteps(num_inference_steps)
+        # use ony end of diffusion if asked
+        if frac_diffusion_skipped is not None:
+            # we keep the last (1 - frac_diffusion_skipped)*100% of timesteps
+            init_timestep = self.scheduler.config.num_train_timesteps * (
+                1 - frac_diffusion_skipped
+            )
+            # generation goes from T to 0, so we keep the timesteps *smaller* than init_timestep
+            timesteps = self.scheduler.timesteps[
+                self.scheduler.timesteps <= init_timestep
+            ]
+        else:
+            timesteps = self.scheduler.timesteps
 
-        for t in self.progress_bar(self.scheduler.timesteps):
+        for t in self.progress_bar(timesteps):
+            # TODO: do the cond & uncond passes at once like for SD!
             # 1. predict noise model_output
             cond_output = self.unet(
                 sample=image,
@@ -155,7 +214,20 @@ class ConditionalDDIMPipeline(DiffusionPipeline):
                     ),
                 ).sample
 
-                guided_score = (1 + w) * cond_output - w * uncond_output
+                # cast w to outputs shape if applicable
+                if isinstance(w, torch.Tensor):
+                    w = w.view(-1, 1, 1, 1)
+
+                # combine predictions
+                match guidance_eqn:
+                    case "imagen":
+                        guided_score = uncond_output + w * (cond_output - uncond_output)
+                    case "CFG":
+                        guided_score = cond_output + w * (cond_output - uncond_output)
+                    case _:
+                        raise ValueError(
+                            f"Unknown guidance equation '{guidance_eqn}'; should be 'imagen' or 'CFG'"
+                        )
 
             else:
                 guided_score = cond_output
