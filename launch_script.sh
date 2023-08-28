@@ -45,11 +45,11 @@ $1
 --resolution 128
 --train_batch_size 64
 --eval_batch_size 256
---num_epochs 900
+--max_num_steps 50000
 --learning_rate 1e-4
 --mixed_precision fp16
 --eval_save_model_every_epochs 50
---nb_generated_images 6144
+--nb_generated_images 1536
 --enable_xformers_memory_efficient_attention
 --checkpoints_total_limit 2
 --checkpointing_steps 1000
@@ -58,6 +58,7 @@ $1
 --compute_fid
 --compute_isc
 --compute_kid
+--resume_from_checkpoint latest
 "
 
 # ----------------------------------------> Echo commands <----------------------------------------

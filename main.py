@@ -13,16 +13,17 @@
 # limitations under the License.
 
 from argparse import Namespace
+from math import inf
 from pathlib import Path
 
 import torch
-import wandb
 from accelerate import Accelerator
 from accelerate.logging import MultiProcessAdapter, get_logger
 from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import EMAModel
 
+import wandb
 from src.args_parser import parse_args
 from src.utils_dataset import setup_dataset
 from src.utils_misc import (
@@ -211,11 +212,21 @@ def main(args: Namespace):
     )
 
     # ---------------------------- Learning Rate Scheduler ----------------------------
+    # get the final number of trainig steps
+    tot_training_steps: int = min(
+        (
+            args.max_num_epochs * len(train_dataloader)
+            if args.max_num_epochs is not None
+            else inf
+        ),
+        args.max_num_steps if args.max_num_steps is not None else inf,
+    )
+
     lr_scheduler = get_scheduler(  # TODO: different params for different components
         args.lr_scheduler,
         optimizer=optimizer,
         num_warmup_steps=args.lr_warmup_steps * args.gradient_accumulation_steps,
-        num_training_steps=(len(train_dataloader) * args.num_epochs),
+        num_training_steps=tot_training_steps,
     )
 
     # ----------------------------- Distributed Compute  -----------------------------
@@ -265,7 +276,6 @@ def main(args: Namespace):
     # if accelerator.is_main_process:
     #     run = os.path.split(__file__)[-1].split(".")[0]
     #     accelerator.init_trackers(run)
-
     first_epoch = 0
     global_step = 0
     resume_step = 0
@@ -282,6 +292,7 @@ def main(args: Namespace):
         components_to_train_transcribed,
         len(dataset),
         pipeline.scheduler,
+        tot_training_steps,
     )
 
     # ---------------------------- Resume from Checkpoint ----------------------------
@@ -289,13 +300,17 @@ def main(args: Namespace):
         first_epoch, resume_step, global_step = resume_from_checkpoint(
             args, logger, accelerator, num_update_steps_per_epoch, global_step
         )
+    epoch = first_epoch
 
     # ----------------------------- Initial best metrics -----------------------------
     if accelerator.is_main_process:
         best_metric = get_initial_best_metric()
 
     # --------------------------------- Training loop --------------------------------
-    for epoch in range(first_epoch, args.num_epochs):
+    while (
+        epoch < (args.max_num_epochs if args.max_num_epochs is not None else inf)
+        and global_step < tot_training_steps
+    ):
         # Training epoch
         global_step = perform_training_epoch(
             num_update_steps_per_epoch=num_update_steps_per_epoch,
@@ -314,6 +329,7 @@ def main(args: Namespace):
             logger=logger,
             do_uncond_pass_across_all_procs=do_uncond_pass_across_all_procs,
             params_to_clip=params_to_optimize,
+            tot_training_steps=tot_training_steps,
         )
 
         # Generate sample images for visual inspection & metrics computation

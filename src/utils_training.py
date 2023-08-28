@@ -103,6 +103,7 @@ def get_training_setup(
     components_to_train_transcribed: list[str],
     nb_tot_samples: int,
     noise_scheduler: DDIMScheduler,
+    tot_training_steps: int,
 ) -> tuple[int, list[int]]:
     """
     Returns
@@ -120,7 +121,6 @@ def get_training_setup(
     num_update_steps_per_epoch = ceil(
         len(train_dataloader) / args.gradient_accumulation_steps
     )
-    max_train_steps = args.num_epochs * num_update_steps_per_epoch
 
     # distribute "batches" for image generation
     # tot_nb_eval_batches is the total number of batches for image generation
@@ -143,13 +143,10 @@ def get_training_setup(
         noise_scheduler,
         nb_tot_samples,
         total_batch_size,
-        max_train_steps,
+        tot_training_steps,
     )
 
-    return (
-        num_update_steps_per_epoch,
-        actual_eval_batch_sizes_for_this_process,
-    )
+    return (num_update_steps_per_epoch, actual_eval_batch_sizes_for_this_process)
 
 
 def perform_training_epoch(
@@ -169,6 +166,7 @@ def perform_training_epoch(
     logger: MultiProcessAdapter,
     do_uncond_pass_across_all_procs: torch.BoolTensor,
     params_to_clip: list,
+    tot_training_steps: int,
 ) -> int:
     # 1. Retrieve models & set then to train mode if applicable
     # components common to all models
@@ -199,6 +197,10 @@ def perform_training_epoch(
 
     # 3. Iterate over all batches
     for step, batch in enumerate(train_dataloader):
+        # stop at tot_training_steps
+        if global_step >= tot_training_steps:
+            break
+
         if args.debug:
             # stop at 10 steps for quick debug purposes
             # TODO: this might break resume_from_checkpoint just below?

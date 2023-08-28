@@ -175,7 +175,16 @@ def parse_args() -> Namespace:
             " process."
         ),
     )
-    parser.add_argument("--num_epochs", type=int, required=True)
+    parser.add_argument(
+        "--max_num_epochs",
+        type=int,
+        help="Number of epochs to train for. Must be provided if --num_steps is not.",
+    )
+    parser.add_argument(
+        "--max_num_steps",
+        type=int,
+        help="Number of optimizer steps to train for. Must be provided if --num_epochs is not.",
+    )
     parser.add_argument(
         "--eval_save_model_every_epochs",
         type=int,

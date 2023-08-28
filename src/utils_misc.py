@@ -150,7 +150,6 @@ def args_checker(
 
     # TODO: adapt below to support LDM *not* pulled from a pretrained model
     # TODO: adapt below to support DDIM pulled from a pretrained model
-
     if args.pretrained_model_name_or_path is None:
         assert (
             args.noise_scheduler_config_path is not None
@@ -172,6 +171,10 @@ def args_checker(
             logger.warning(
                 "\033[1;33mSUBSAMPLING THE DATASET BUT NO SEED PROVIDED; RESUMING THIS RUN WILL NOT BE POSSIBLE\033[0m\n"
             )
+
+    assert (
+        args.max_num_epochs is not None or args.max_num_steps is not None
+    ), "Either max_num_epochs or max_num_steps must be provided"
 
 
 def create_repo_structure(
@@ -287,12 +290,19 @@ def modify_args_for_debug(
     args.num_train_timesteps = 10
     args.num_inference_steps = 5
     args.checkpoints_total_limit = 1
-    args.num_epochs = 3
+    if args.max_num_epochs is not None:
+        args.max_num_epochs = 3
+    if args.max_num_steps is not None:
+        args.max_num_steps = 100
     # 3 checkpoints during the debug training
     num_update_steps_per_epoch = ceil(
         nb_tot_training_examples / args.gradient_accumulation_steps
     )
-    max_train_steps = args.num_epochs * num_update_steps_per_epoch
+    max_train_steps = (
+        args.max_num_epochs * num_update_steps_per_epoch
+        if args.max_num_epochs is not None
+        else 3 * num_update_steps_per_epoch
+    )
     args.checkpointing_steps = max_train_steps // 3
     args.kid_subset_size = min(1000, args.nb_generated_images)
 
@@ -371,7 +381,7 @@ def print_info_at_run_start(
     noise_scheduler: DDIMScheduler,
     tot_nb_samples: int,
     total_batch_size: int,
-    max_train_steps: int,
+    tot_training_steps: int,
 ):
     logger.info("\033[1m" + "*" * 46 + " Running training " + "*" * 46 + "\033[0m")
     _pretty_info_log(
@@ -434,8 +444,13 @@ def print_info_at_run_start(
     )
     _pretty_info_log(
         logger,
-        "Num epochs",
-        args.num_epochs,
+        "Maximum number of epochs",
+        args.max_num_epochs,
+    )
+    _pretty_info_log(
+        logger,
+        "Maximum number of training steps",
+        args.max_num_steps,
     )
     _pretty_info_log(
         logger,
@@ -460,14 +475,14 @@ def print_info_at_run_start(
     _pretty_info_log(
         logger,
         "Total optimization steps",
-        max_train_steps,
+        tot_training_steps,
     )
     _pretty_info_log(
         logger,
         "Num steps between checkpoints",
         args.checkpointing_steps,
     )
-    tot_nb_chckpts = max_train_steps // args.checkpointing_steps
+    tot_nb_chckpts = tot_training_steps // args.checkpointing_steps
     _pretty_info_log(
         logger,
         "Num checkpoints during training",
