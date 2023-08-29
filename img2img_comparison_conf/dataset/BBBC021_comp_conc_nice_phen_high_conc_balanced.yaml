@@ -1,0 +1,7 @@
+BBBC021_comp_conc_nice_phen_high_conc_balanced:
+  _target_: torchvision.datasets.ImageFolder
+  root: /projects/deepdevpath/Thomas/data/BBBC021_comp_conc_nice_phen_high_conc_balanced
+  transform: ???
+  target_transform: ???
+  resolution: 128
+  normalize: [0.5, 0.5]  # map to [-1, 1] for SiLU

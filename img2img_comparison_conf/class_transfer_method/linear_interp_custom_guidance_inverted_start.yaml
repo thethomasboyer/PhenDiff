@@ -1,0 +1,3 @@
+linear_interp_custom_guidance_inverted_start:
+  guidance_loss_scale: 0.001
+  p: 2

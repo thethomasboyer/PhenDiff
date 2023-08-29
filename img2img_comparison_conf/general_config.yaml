@@ -1,0 +1,11 @@
+defaults:
+  - class_transfer_method: linear_interp_custom_guidance_inverted_start
+  - dataset: BBBC021_comp_conc_nice_phen_high_conc_balanced
+  - pipeline:
+      - DDIM
+      # - SD
+  - _self_
+
+compute_fid: true
+compute_isc: true
+compute_kid: true
