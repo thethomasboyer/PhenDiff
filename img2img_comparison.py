@@ -13,17 +13,16 @@
 # limitations under the License.
 
 # TODO's:
-# +++ adapt to SD
 # +++ add the other methods
 # +++ adapt to Jean Zay
 # ++ add conditional metrics computation (requires != folders w.r.t. target labels + find_deep=True for uncond case)
 # ++ parallelize inference
 # ++ plug wandb
 # + check if fp16 is used + other inference time optimizations
-# + dynamic batch size w.r.t. GPUs?
 # + save inverted Gaussians once per noise scheduler config?
 
 import logging
+from pathlib import Path
 
 import hydra
 import torch_fidelity
@@ -31,9 +30,38 @@ from hydra.utils import call
 from omegaconf import DictConfig, OmegaConf
 
 from src.utils_Img2Img import (
+    classifier_free_guidance,
+    ddib,
     linear_interp_custom_guidance_inverted_start,
     load_datasets,
 )
+
+BATCH_SIZES: dict[str, dict[str, dict[str, int]]] = {
+    "rtx8000": {
+        "DDIM": {
+            "linear_interp_custom_guidance_inverted_start": 48,
+            "classifier_free_guidance": -1,
+            "ddib": -1,
+        },
+        "SD": {
+            "linear_interp_custom_guidance_inverted_start": 64,
+            "classifier_free_guidance": -1,
+            "ddib": -1,
+        },
+    },
+    "a100": {
+        "DDIM": {
+            "linear_interp_custom_guidance_inverted_start": -1,
+            "classifier_free_guidance": -1,
+            "ddib": -1,
+        },
+        "SD": {
+            "linear_interp_custom_guidance_inverted_start": -1,
+            "classifier_free_guidance": -1,
+            "ddib": -1,
+        },
+    },
+}
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +78,7 @@ def main(cfg: DictConfig) -> None:
     output_dir: str = hydra_cfg["runtime"]["output_dir"]
 
     # --------------------------------- Load pretrained pipelines ---------------------------------
+    logger.info(f"Loading pipelines")
     pipes = call(cfg.pipeline)
 
     # ---------------------------------------- Load dataset ---------------------------------------
@@ -66,7 +95,35 @@ def main(cfg: DictConfig) -> None:
             case "linear_interp_custom_guidance_inverted_start":
                 logger.info("Running linear_interp_custom_guidance_inverted_start")
                 linear_interp_custom_guidance_inverted_start(
-                    pipes, train_dataset, test_dataset, cfg, output_dir
+                    pipes,
+                    train_dataset,
+                    test_dataset,
+                    cfg,
+                    output_dir,
+                    logger,
+                    BATCH_SIZES,
+                )
+            case "classifier_free_guidance":
+                logger.info("Running classifier_free_guidance")
+                classifier_free_guidance(
+                    pipes,
+                    train_dataset,
+                    test_dataset,
+                    cfg,
+                    output_dir,
+                    logger,
+                    BATCH_SIZES,
+                )
+            case "ddib":
+                logger.info("Running ddib")
+                ddib(
+                    pipes,
+                    train_dataset,
+                    test_dataset,
+                    cfg,
+                    output_dir,
+                    logger,
+                    BATCH_SIZES,
                 )
             case _:
                 raise ValueError(
@@ -76,11 +133,13 @@ def main(cfg: DictConfig) -> None:
     # ------------------------------------ Metrics computation ------------------------------------
     for class_transfer_method in cfg.class_transfer_method:
         for pipename in pipes:
-            for split, dataset in zip(["train", "test"], [train_dataset, test_dataset]):
+            for split, dataset in zip(
+                ["train", "test"], [cfg.dataset[dataset_name].root] * 2
+            ):
                 # 1. Unconditional
                 logger.info("Computing metrics (unconditional case)")
                 # get the images to compare
-                true_images = dataset
+                true_images = Path(dataset, split).as_posix()
                 generated_images = (
                     output_dir + f"/{class_transfer_method}/{pipename}/{split}"
                 )
@@ -89,18 +148,20 @@ def main(cfg: DictConfig) -> None:
                     input1=true_images,
                     input2=generated_images,
                     cuda=True,
-                    batch_size=cfg.pipeline[pipename].eval_batch_size,
+                    batch_size=BATCH_SIZES[cfg.gpu][pipename][class_transfer_method],
                     isc=cfg.compute_isc,
                     fid=cfg.compute_fid,
                     kid=cfg.compute_kid,
                     verbose=False,
                     # cache_root=fidelity_cache_root,
                     # input1_cache_name=f"{class_name}",  # forces caching
-                    # kid_subset_size=args.kid_subset_size,
-                    # samples_find_deep=args.proba_uncond == 1,
+                    kid_subset_size=cfg.kid_subset_size,
+                    samples_find_deep=True,
                 )
                 # log metrics
-                logger.info("Metrics:", metrics_dict)
+                logger.info(
+                    f"Metrics for {class_transfer_method} with {pipename} on {split} split: {metrics_dict}"
+                )
 
                 # 2. Conditional TODO
 

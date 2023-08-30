@@ -5,5 +5,4 @@ DDIM:
   # torch_dtype: fp16
 
   # other args; these "are not expected [...] and will be ignored" at instantiation
-  num_inference_steps: 100
-  eval_batch_size: 96 # 96 = A100
+  num_inference_steps: 25

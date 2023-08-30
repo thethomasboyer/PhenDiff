@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+from logging import Logger
 from math import ceil
 from typing import Literal, Tuple
 
@@ -34,6 +35,8 @@ from src.custom_pipeline_stable_diffusion_img2img import (
     CustomStableDiffusionImg2ImgPipeline,
 )
 from src.pipeline_conditional_ddim import ConditionalDDIMPipeline
+
+DEBUG_STEP_LIMIT = 0
 
 
 @torch.no_grad()
@@ -80,7 +83,9 @@ def tensor_to_PIL(
             img_to_show = img_to_show.mean(dim=1, keepdim=True)
     # these are "true" images => return a color image
     elif tensor.shape[1] == 3:
-        assert tensor.min() >= -1 and tensor.max() <= 1, "Expecting values in [-1, 1]"
+        assert (
+            tensor.min() >= -1 and tensor.max() <= 1
+        ), f"Expecting values in [-1, 1], got tensor.min()={tensor.min()} and tensor.max()={tensor.max()}"
         if tensor.min() != -1:
             print(
                 f"Warning in tensor_to_PIL: tensor.min() = {tensor.min().item()} != -1"
@@ -145,93 +150,7 @@ def hack_class_embedding(cl_embed: Tensor) -> Tensor:
     return cl_embed
 
 
-def Lp_loss(
-    x: torch.Tensor, y: torch.Tensor, p: int | float | Literal["inf", "-inf"] = 2
-) -> torch.Tensor:
-    """Returns the L_p norms of the flattened `(x[i] - y[i])` or `(x[i] - y)` vectors for each `i` in the batch.
-
-    Arguments
-    ---------
-    - x: `torch.Tensor`, shape `(N, C, H, W)`
-    - y: `torch.Tensor`, shape `(C, H, W)` or `(N, C, H, W)`
-    - p: `int | float | "inf" | "-inf"`; default to `2`
-
-    Returns
-    -------
-    `torch.linalg.vector_norm(x - y, dim=(1, 2, 3), ord=p)`, that is:
-    ```
-        torch.linalg.vector_norm(x[i] - y, ord=p) for i in range(N)
-    ```
-    """
-    assert (
-        x.shape[1:] == y.shape or x.shape == y.shape
-    ), f"y.shape={y.shape} should be equal to either x.shape or x.shape[1:] (x.shape={x.shape})"
-    assert len(y.shape) in (
-        3,
-        4,
-    ), f"y.shape={y.shape} should be (C, H, W) or (N, C, H, W)"
-    return torch.linalg.vector_norm(x - y, dim=(1, 2, 3), ord=p)
-
-
-def linear_interp_custom_guidance_inverted_start(
-    pipes: dict,
-    train_dataset: Dataset,
-    test_dataset: Dataset,
-    cfg: DictConfig,
-    output_dir: str,
-):
-    """TODO: docstring"""
-
-    for pipename, pipe in pipes.items():
-        for split, dataset in zip(["train", "test"], [train_dataset, test_dataset]):
-            # create dataloader
-            dataloader = torch.utils.data.DataLoader(
-                dataset,
-                batch_size=cfg.pipeline[pipename].eval_batch_size,
-                shuffle=True,
-            )
-
-            # move pipe to GPU
-            distributed_state = PartialState()
-            pipe = pipe.to(distributed_state.device)
-
-            # create save dir
-            save_dir = (
-                output_dir
-                + f"/linear_interp_custom_guidance_inverted_start/{pipename}/{split}"
-            )
-            os.makedirs(save_dir)
-
-            for batch in tqdm(
-                dataloader, desc=f"Running {pipename} on {split} dataset"
-            ):
-                clean_images = batch["images"].to(distributed_state.device)
-                orig_class_labels = batch["class_labels"].to(distributed_state.device)
-                # only works for the binary case...
-                target_class_labels = 1 - orig_class_labels
-                filenames = batch["file_basenames"]
-
-                # perform inversion
-                inverted_gauss = _inversion(
-                    pipe, pipename, clean_images, orig_class_labels, cfg
-                )
-
-                # perform guided generation
-                image = _custom_guided_generation(
-                    pipe, pipename, inverted_gauss, target_class_labels, cfg
-                )
-
-                images_to_save = tensor_to_PIL(image)
-                if isinstance(images_to_save, Image.Image):
-                    images_to_save = [images_to_save]
-
-                for i, image_to_save in enumerate(images_to_save):
-                    save_filename = (
-                        save_dir + f"/{filenames[i]}_to_{target_class_labels[i]}.png"
-                    )
-                    image_to_save.save(save_filename)
-
-
+@torch.no_grad()
 def load_datasets(cfg: DictConfig, dataset_name: str) -> Tuple[Dataset, Dataset]:
     """TODO: docstring"""
     # data preprocessing
@@ -279,6 +198,190 @@ def load_datasets(cfg: DictConfig, dataset_name: str) -> Tuple[Dataset, Dataset]
     return train_dataset, test_dataset
 
 
+def Lp_loss(
+    x: torch.Tensor, y: torch.Tensor, p: int | float | Literal["inf", "-inf"] = 2
+) -> torch.Tensor:
+    """Returns the L_p norms of the flattened `(x[i] - y[i])` or `(x[i] - y)` vectors for each `i` in the batch.
+
+    Arguments
+    ---------
+    - x: `torch.Tensor`, shape `(N, C, H, W)`
+    - y: `torch.Tensor`, shape `(C, H, W)` or `(N, C, H, W)`
+    - p: `int | float | "inf" | "-inf"`; default to `2`
+
+    Returns
+    -------
+    `torch.linalg.vector_norm(x - y, dim=(1, 2, 3), ord=p)`, that is:
+    ```
+        torch.linalg.vector_norm(x[i] - y, ord=p) for i in range(N)
+    ```
+    """
+    assert (
+        x.shape[1:] == y.shape or x.shape == y.shape
+    ), f"y.shape={y.shape} should be equal to either x.shape or x.shape[1:] (x.shape={x.shape})"
+    assert len(y.shape) in (
+        3,
+        4,
+    ), f"y.shape={y.shape} should be (C, H, W) or (N, C, H, W)"
+    return torch.linalg.vector_norm(x - y, dim=(1, 2, 3), ord=p)
+
+
+def ddib(
+    pipes: dict,
+    train_dataset: Dataset,
+    test_dataset: Dataset,
+    cfg: DictConfig,
+    output_dir: str,
+    logger: Logger,
+    batch_sizes: dict[str, dict[str, dict[str, int]]],
+):
+    raise NotImplementedError
+
+
+def classifier_free_guidance(
+    pipes: dict,
+    train_dataset: Dataset,
+    test_dataset: Dataset,
+    cfg: DictConfig,
+    output_dir: str,
+    logger: Logger,
+    batch_sizes: dict[str, dict[str, dict[str, int]]],
+):
+    """TODO: docstring"""
+    for pipename, pipe in pipes.items():
+        for split, dataset in zip(["train", "test"], [train_dataset, test_dataset]):
+            # Create dataloader
+            dataloader = torch.utils.data.DataLoader(
+                dataset,
+                batch_size=batch_sizes[cfg.gpu][pipename]["classifier_free_guidance"],
+                shuffle=True,
+            )
+
+            # Move pipe to GPU
+            distributed_state = PartialState()
+            pipe = pipe.to(distributed_state.device)
+
+            # Create save dir
+            save_dir = (
+                output_dir
+                + f"/linear_interp_custom_guidance_inverted_start/{pipename}/{split}"
+            )
+            os.makedirs(save_dir)
+
+            # Iterate over batches
+            for step, batch in enumerate(
+                tqdm(dataloader, desc=f"Running {pipename} on {split} dataset")
+            ):
+                # Get batch
+                clean_images = batch["images"].to(distributed_state.device)
+                orig_class_labels = batch["class_labels"].to(distributed_state.device)
+                # only works for the binary case...
+                target_class_labels = 1 - orig_class_labels
+                filenames = batch["file_basenames"]
+
+                # Perform guided generation
+                raise NotImplementedError
+                # if isinstance(pipe, ConditionalDDIMPipeline):
+                #     images = pipe(
+                #         class_labels=target_class_labels,
+                #         w=cfg.class_transfer_method.classifier_free_guidance.guidance_scale,
+                #         # TODO
+                #     )
+
+
+def linear_interp_custom_guidance_inverted_start(
+    pipes: dict,
+    train_dataset: Dataset,
+    test_dataset: Dataset,
+    cfg: DictConfig,
+    output_dir: str,
+    logger: Logger,
+    batch_sizes: dict[str, dict[str, dict[str, int]]],
+):
+    """TODO: docstring"""
+    for pipename, pipe in pipes.items():
+        for split, dataset in zip(["train", "test"], [train_dataset, test_dataset]):
+            # Create dataloader
+            dataloader = torch.utils.data.DataLoader(
+                dataset,
+                batch_size=batch_sizes[cfg.gpu][pipename][
+                    "linear_interp_custom_guidance_inverted_start"
+                ],
+                shuffle=True,
+            )
+
+            # Move pipe to GPU
+            distributed_state = PartialState()
+            pipe = pipe.to(distributed_state.device)
+
+            # Create save dir
+            save_dir = (
+                output_dir
+                + f"/linear_interp_custom_guidance_inverted_start/{pipename}/{split}"
+            )
+            os.makedirs(save_dir)
+
+            # Iterate over batches
+            for step, batch in enumerate(
+                tqdm(dataloader, desc=f"Running {pipename} on {split} dataset")
+            ):
+                # Get batch
+                clean_images = batch["images"].to(distributed_state.device)
+                orig_class_labels = batch["class_labels"].to(distributed_state.device)
+                # only works for the binary case...
+                target_class_labels = 1 - orig_class_labels
+                filenames = batch["file_basenames"]
+
+                # Preprocess inputs if LDM
+                # target_class_labels must be saved for filename
+                target_class_embeds = None
+                if isinstance(pipe, CustomStableDiffusionImg2ImgPipeline):
+                    clean_images, (
+                        orig_class_labels,
+                        target_class_embeds,
+                    ) = _LDM_preprocess(
+                        pipe, clean_images, [orig_class_labels, target_class_labels]
+                    )
+
+                # Perform inversion
+                inverted_gauss = _inversion(
+                    pipe, pipename, clean_images, orig_class_labels, cfg
+                )
+
+                # Perform guided generation
+                target_cond = (
+                    target_class_embeds
+                    if target_class_embeds is not None
+                    else target_class_labels
+                )
+                image = _custom_guided_generation(
+                    pipe, pipename, inverted_gauss, target_cond, cfg
+                )
+
+                # Decode from latent space if LDM
+                if isinstance(pipe, CustomStableDiffusionImg2ImgPipeline):
+                    image = _decode_to_images(pipe, image)
+                    # also normalize image back to [-1, 1]
+                    image -= image.min()
+                    image /= image.max()
+                    image = image * 2 - 1
+
+                # Save images to disk
+                images_to_save = tensor_to_PIL(image)
+                if isinstance(images_to_save, Image.Image):
+                    images_to_save = [images_to_save]
+                for i, image_to_save in enumerate(images_to_save):
+                    save_filename = (
+                        save_dir + f"/{filenames[i]}_to_{target_class_labels[i]}.png"
+                    )
+                    image_to_save.save(save_filename)
+
+                # Stop if debug flag
+                if cfg.debug and step >= DEBUG_STEP_LIMIT:
+                    logger.warn(f"Debug mode: breaking after {DEBUG_STEP_LIMIT} steps")
+                    break
+
+
 def _custom_guided_generation(
     pipe: ConditionalDDIMPipeline | CustomStableDiffusionImg2ImgPipeline,
     pipename: str,
@@ -302,9 +405,9 @@ def _custom_guided_generation(
 
         # 1. predict noise/velocity/etc.
         model_output = pipe.unet(
-            sample=images,
-            timestep=t,
-            class_labels=target_class_labels,
+            images,
+            t,
+            target_class_labels,
         ).sample
 
         # 2. get x_0 prediction
@@ -374,3 +477,47 @@ def _inversion(
         ).prev_sample
 
     return gauss
+
+
+@torch.no_grad()
+def _LDM_preprocess(
+    pipe: CustomStableDiffusionImg2ImgPipeline,
+    images: Tensor,
+    class_labels_seq: list[Tensor],
+) -> tuple[Tensor, list[Tensor]]:
+    # encode images to latent space...
+    latents = _encode_to_latents(pipe, images)
+    # ...and class labels to class embedding
+    class_labels_embeds_seq = []
+    for class_labels in class_labels_seq:
+        class_labels_embeds = pipe._encode_class(
+            class_labels=class_labels,
+            device=class_labels.device,
+            do_classifier_free_guidance=False,
+        )
+        # hack to match the expected encoder_hidden_states shape
+        class_labels_embeds = hack_class_embedding(class_labels_embeds)
+        class_labels_embeds_seq.append(class_labels_embeds)
+    return latents, class_labels_embeds_seq
+
+
+@torch.no_grad()
+def _encode_to_latents(
+    pipe: CustomStableDiffusionImg2ImgPipeline, gauss: Tensor
+) -> Tensor:
+    # encode
+    latent = pipe.vae.encode(gauss).latent_dist.sample()
+    # scale
+    latent *= pipe.vae.config.scaling_factor
+    return latent
+
+
+@torch.no_grad()
+def _decode_to_images(
+    pipe: CustomStableDiffusionImg2ImgPipeline, latents: Tensor
+) -> Tensor:
+    # unscale
+    latents /= pipe.vae.config.scaling_factor
+    # decode
+    images = pipe.vae.decode(latents, return_dict=False)[0]
+    return images

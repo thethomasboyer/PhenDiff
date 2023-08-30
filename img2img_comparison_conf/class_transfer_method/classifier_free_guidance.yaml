@@ -1,0 +1,2 @@
+classifier_free_guidance:
+  guidance_scale: 4.5

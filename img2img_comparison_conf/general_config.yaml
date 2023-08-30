@@ -3,9 +3,17 @@ defaults:
   - dataset: BBBC021_comp_conc_nice_phen_high_conc_balanced
   - pipeline:
       - DDIM
-      # - SD
+      - SD
   - _self_
 
 compute_fid: true
 compute_isc: true
 compute_kid: true
+kid_subset_size: 1000 # 1000 is the default
+
+debug: false
+
+gpu: a100
+
+override hydra/job_logging: colorlog
+override hydra/hydra_logging: colorlog
