@@ -26,7 +26,7 @@ def parse_args() -> Namespace:
         "--debug",
         default=False,
         action="store_true",
-        help="Run the training script in debug mode, ie with: eval_save_model_every_epochs=1, nb_generated_images=eval_batch_size, num_train_timesteps=10, num_inference_steps=5, checkpoints_total_limit=1, checkpointing_steps=30, kid_subset_size=min(1000, nb_generated_images)",
+        help="Run the training script in debug mode, ie with: eval_save_model_every_{epochs,opti_steps}={1,10}, nb_generated_images=eval_batch_size, num_train_timesteps=10, num_inference_steps=5, checkpoints_total_limit=1, checkpointing_steps=30, kid_subset_size=min(1000, nb_generated_images)",
     )
     parser.add_argument(
         "--model_type", type=str, choices=["DDIM", "StableDiffusion"], required=True
@@ -188,8 +188,12 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "--eval_save_model_every_epochs",
         type=int,
-        required=True,
-        help="How often to evaluate and save (if --main_metric is the best recorded to date) the model during training.",
+        help="Evaluate and save (if --main_metric is the best recorded to date) the model during training every x epochs. Either this or --eval_save_model_every_opti_steps must be provided.",
+    )
+    parser.add_argument(
+        "--eval_save_model_every_opti_steps",
+        type=int,
+        help="Evaluate and save (if --main_metric is the best recorded to date) the model during training every x optimization steps. Either this or --eval_save_model_every_epochs must be provided.",
     )
     parser.add_argument(
         "--precise_first_n_epochs",

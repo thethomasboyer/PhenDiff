@@ -54,26 +54,22 @@ def resume_from_checkpoint(
     accelerator,
     num_update_steps_per_epoch: int,
     global_step: int,
+    chckpt_save_path: Path,
 ) -> tuple[int, int, int]:
-    this_experiment_folder = Path(
-        args.exp_output_dirs_parent_folder, args.experiment_name
-    )
-
     if args.resume_from_checkpoint != "latest":
         path = os.path.basename(args.resume_from_checkpoint)
-        path = os.path.join(this_experiment_folder, "checkpoints", path)
+        path = os.path.join(chckpt_save_path, path)
     else:
         # Get the most recent checkpoint
-        chckpnts_dir = Path(this_experiment_folder, "checkpoints")
-        if not Path.exists(chckpnts_dir) and accelerator.is_main_process:
+        if not Path.exists(chckpt_save_path) and accelerator.is_main_process:
             logger.warning(
-                f"No 'checkpoints' directory found in experiment folder {this_experiment_folder}; creating one."
+                f"No 'checkpoints' directory found in run folder; creating one."
             )
-            os.makedirs(chckpnts_dir)
+            os.makedirs(chckpt_save_path)
         accelerator.wait_for_everyone()
-        dirs = os.listdir(chckpnts_dir)
+        dirs = os.listdir(chckpt_save_path)
         dirs = sorted(dirs, key=lambda x: int(x.split("_")[1]))
-        path = Path(chckpnts_dir, dirs[-1]).as_posix() if len(dirs) > 0 else None
+        path = Path(chckpt_save_path, dirs[-1]).as_posix() if len(dirs) > 0 else None
 
     if path is None:
         logger.info(
@@ -167,6 +163,16 @@ def perform_training_epoch(
     do_uncond_pass_across_all_procs: torch.BoolTensor,
     params_to_clip: list,
     tot_training_steps: int,
+    image_generation_tmp_save_folder: Path,
+    fidelity_cache_root: Path,
+    actual_eval_batch_sizes_for_this_process,
+    nb_classes: int,
+    dataset,
+    raw_dataset,
+    full_pipeline_save_folder,
+    repo,
+    best_metric,
+    chckpt_save_path: Path,
 ) -> int:
     # 1. Retrieve models & set then to train mode if applicable
     # components common to all models
@@ -282,6 +288,7 @@ def perform_training_epoch(
                 global_step=global_step,
                 accelerator=accelerator,
                 logger=logger,
+                chckpt_save_path=chckpt_save_path,
             )
 
         # log some values & define W&B alert
@@ -304,6 +311,51 @@ def perform_training_epoch(
                 wait_duration=21600,  # 6 hours
             )
             logger.error(msg)
+
+        # Generate sample images for visual inspection & metrics computation
+        if (
+            args.eval_save_model_every_opti_steps is not None
+            and global_step % args.eval_save_model_every_opti_steps == 0
+        ):
+            best_model_to_date, best_metric = generate_samples_and_compute_metrics(
+                args=args,
+                accelerator=accelerator,
+                pipeline=pipeline,
+                image_generation_tmp_save_folder=image_generation_tmp_save_folder,
+                fidelity_cache_root=fidelity_cache_root,
+                actual_eval_batch_sizes_for_this_process=actual_eval_batch_sizes_for_this_process,
+                epoch=epoch,
+                global_step=global_step,
+                ema_models=ema_models,
+                components_to_train_transcribed=components_to_train_transcribed,
+                nb_classes=nb_classes,
+                logger=logger,
+                dataset=dataset,
+                raw_dataset=raw_dataset,
+                best_metric=best_metric if accelerator.is_main_process else None,
+            )
+            # save model if best to date
+            if accelerator.is_main_process:
+                # log best model indicator
+                accelerator.log(
+                    {
+                        "best_model_to_date": int(best_model_to_date),
+                    },
+                    step=global_step,
+                )
+                if epoch != 0 and best_model_to_date:
+                    save_pipeline(
+                        accelerator=accelerator,
+                        args=args,
+                        pipeline=pipeline,
+                        full_pipeline_save_folder=full_pipeline_save_folder,
+                        repo=repo,
+                        epoch=epoch,
+                        logger=logger,
+                        ema_models=ema_models,
+                        components_to_train_transcribed=components_to_train_transcribed,
+                    )
+
     progress_bar.close()
 
     # wait for everybody at each end of training epoch
@@ -480,6 +532,7 @@ def _syn_training_state(
     global_step: int,
     accelerator: Accelerator,
     logger: MultiProcessAdapter,
+    chckpt_save_path: Path,
 ) -> int:
     # update the EMA weights if applicable
     if args.use_ema:
@@ -493,18 +546,12 @@ def _syn_training_state(
 
     if global_step % args.checkpointing_steps == 0:
         # time to save a checkpoint!
+        this_checkpoint_folder = Path(chckpt_save_path, f"step_{global_step}")
         if accelerator.is_main_process:
-            this_experiment_folder = Path(
-                args.exp_output_dirs_parent_folder, args.experiment_name
-            )
-
-            save_path = Path(
-                this_experiment_folder, "checkpoints", f"checkpoint_{global_step}"
-            )
-            accelerator.save_state(save_path.as_posix())
-            logger.info(f"Checkpointed step {global_step} at {save_path}")
+            accelerator.save_state(this_checkpoint_folder.as_posix())
+            logger.info(f"Checkpointed step {global_step} at {this_checkpoint_folder}")
             # Delete old checkpoints if needed
-            checkpoints_list = os.listdir(Path(this_experiment_folder, "checkpoints"))
+            checkpoints_list = os.listdir(chckpt_save_path)
             nb_checkpoints = len(checkpoints_list)
             if nb_checkpoints > args.checkpoints_total_limit:
                 to_del = sorted(checkpoints_list, key=lambda x: int(x.split("_")[1]))[
@@ -516,7 +563,7 @@ def _syn_training_state(
                     )
                 for dir in to_del:
                     logger.info(f"Deleting {dir}...")
-                    rmtree(Path(this_experiment_folder, "checkpoints", dir))
+                    rmtree(Path(chckpt_save_path, dir))
 
     return global_step
 

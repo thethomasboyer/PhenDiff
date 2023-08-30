@@ -176,14 +176,38 @@ def args_checker(
         args.max_num_epochs is not None or args.max_num_steps is not None
     ), "Either max_num_epochs or max_num_steps must be provided"
 
+    assert (
+        args.eval_save_model_every_epochs is not None
+        or args.eval_save_model_every_opti_steps is not None
+    ), "Either eval_save_model_every_opti_steps or eval_save_model_every_epochs must be provided."
+
 
 def create_repo_structure(
     args: Namespace, accelerator, logger: MultiProcessAdapter
-) -> tuple[Path, Path, Path, None]:
+) -> tuple[Path, Path, Path, None, Path]:
+    """
+    The repo structure is as follows:
+    ```
+    exp_output_dirs_parent_folder
+    |   <experiment_name>
+    |   |   <run_name>
+    |   |   |   checkpoints
+    |   |   |   |   step_<x>
+    |   |   |   |   step_<y>
+    |   |   |   full_pipeline_save
+    |   |   |   .tmp_image_generation_folder
+    |   .fidelity_cache
+    |   .initial_pipeline_save
+    |   .torch_hub_cache
+    ```
+    The <experiment_name>/<run_name> structure mimics that of Weight&Biases.
+    Any weights are specific to a run; any run belongs to a single experiment.
+    """
     repo = None
     this_experiment_folder = Path(
         args.exp_output_dirs_parent_folder, args.experiment_name
     )
+    this_run_folder = Path(this_experiment_folder, args.run_name)
 
     if args.push_to_hub:
         raise NotImplementedError()
@@ -202,17 +226,18 @@ def create_repo_structure(
         #     if "epoch_*" not in gitignore:
         #         gitignore.write("epoch_*\n")
     elif accelerator.is_main_process:
-        os.makedirs(this_experiment_folder, exist_ok=True)
+        os.makedirs(this_run_folder, exist_ok=True)
 
     # Create a folder to save the pipeline during training
-    full_pipeline_save_folder = Path(this_experiment_folder, "full_pipeline_save")
+    # This folder is specific to this *run*
+    full_pipeline_save_folder = Path(this_run_folder, "full_pipeline_save")
     if accelerator.is_main_process:
         os.makedirs(full_pipeline_save_folder, exist_ok=True)
 
     # Create a folder to save the *initial*, pretrained pipeline
     # HF saves other things when downloading the pipeline (blobs, refs)
     # that we are not interested in(?), hence the two folders.
-    # **This folder is shared between all experiments.**
+    # **This folder is shared between all (runs and) experiments.**
     initial_pipeline_save_folder = Path(
         args.exp_output_dirs_parent_folder, ".initial_pipeline_save"
     )
@@ -221,12 +246,14 @@ def create_repo_structure(
 
     # Create a temporary folder to save the generated images during training.
     # Used for metrics computations; a small number of these (eval_batch_size) is logged
+    # This is specific to this *run*
     image_generation_tmp_save_folder = Path(
-        this_experiment_folder, ".tmp_image_generation_folder"
+        this_run_folder, ".tmp_image_generation_folder"
     )
 
     # verify that the checkpointing folder is empty if not resuming run from a checkpoint
-    chckpt_save_path = Path(this_experiment_folder, "checkpoints")
+    # this is specific to this *run*
+    chckpt_save_path = Path(this_run_folder, "checkpoints")
     if accelerator.is_main_process:
         os.makedirs(chckpt_save_path, exist_ok=True)
         chckpts = list(chckpt_save_path.iterdir())
@@ -243,6 +270,7 @@ def create_repo_structure(
         initial_pipeline_save_folder,
         full_pipeline_save_folder,
         repo,
+        chckpt_save_path,
     )
 
 
@@ -285,7 +313,10 @@ def modify_args_for_debug(
     logger: MultiProcessAdapter, args: Namespace, nb_tot_training_examples: int
 ) -> None:
     logger.warning("\033[1;33mDEBUG FLAG: MODIFYING PASSED ARGS\033[0m")
-    args.eval_save_model_every_epochs = 1
+    if args.eval_save_model_every_epochs is not None:
+        args.eval_save_model_every_epochs = 1
+    if args.eval_save_model_every_opti_steps is not None:
+        args.eval_save_model_every_opti_steps = 10
     args.nb_generated_images = args.eval_batch_size
     args.num_train_timesteps = 10
     args.num_inference_steps = 5
@@ -293,17 +324,8 @@ def modify_args_for_debug(
     if args.max_num_epochs is not None:
         args.max_num_epochs = 3
     if args.max_num_steps is not None:
-        args.max_num_steps = 100
-    # 3 checkpoints during the debug training
-    num_update_steps_per_epoch = ceil(
-        nb_tot_training_examples / args.gradient_accumulation_steps
-    )
-    max_train_steps = (
-        args.max_num_epochs * num_update_steps_per_epoch
-        if args.max_num_epochs is not None
-        else 3 * num_update_steps_per_epoch
-    )
-    args.checkpointing_steps = max_train_steps // 3
+        args.max_num_steps = 30
+    args.checkpointing_steps = 10
     args.kid_subset_size = min(1000, args.nb_generated_images)
 
 
@@ -492,6 +514,11 @@ def print_info_at_run_start(
         logger,
         "Num epochs between model evaluation",
         args.eval_save_model_every_epochs,
+    )
+    _pretty_info_log(
+        logger,
+        "Num optimization steps between model evaluation",
+        args.eval_save_model_every_opti_steps,
     )
     _pretty_info_log(
         logger,

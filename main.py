@@ -52,7 +52,7 @@ def main(args: Namespace):
         total_limit=args.checkpoints_total_limit,
         automatic_checkpoint_naming=False,
         project_dir=Path(
-            args.exp_output_dirs_parent_folder, args.experiment_name
+            args.exp_output_dirs_parent_folder, args.experiment_name, args.run_name
         ).as_posix(),
     )
 
@@ -74,12 +74,12 @@ def main(args: Namespace):
     )
 
     # ------------------------------------- WandB ------------------------------------
-    logger.info(f"Logging to project {args.experiment_name}")
+    logger.info(f"Logging to project {args.experiment_name} & run name {args.run_name}")
     accelerator.init_trackers(
         project_name=args.experiment_name,
         config=vars(args),
         # save metadata to the "wandb" directory
-        # inside the *parent* folder common to all experiments
+        # inside the *parent* folder common to all *experiments*
         init_kwargs={
             "wandb": {
                 "dir": args.exp_output_dirs_parent_folder,
@@ -98,6 +98,7 @@ def main(args: Namespace):
         initial_pipeline_save_folder,
         full_pipeline_save_folder,
         repo,
+        chckpt_save_path,
     ) = create_repo_structure(args, accelerator, logger)
     accelerator.wait_for_everyone()
 
@@ -173,7 +174,7 @@ def main(args: Namespace):
             f"Created EMA weights for the following models: {list(ema_models)} (corresponding to the (unordered) following args: {args.components_to_train})"
         )
 
-    # Use memory efficient attention
+    # Use memory efficient attention TODO: remove this! plain Pytorch 2 is better! no?
     if args.enable_xformers_memory_efficient_attention:
         pipeline.enable_xformers_memory_efficient_attention()
 
@@ -271,11 +272,6 @@ def main(args: Namespace):
     torch.distributed.broadcast(do_uncond_pass_across_all_procs, 0)
 
     # -------------------------------- Training Setup --------------------------------
-    # We need to initialize the trackers we use, and also store our configuration.
-    # The trackers initializes automatically on the main process.
-    # if accelerator.is_main_process:
-    #     run = os.path.split(__file__)[-1].split(".")[0]
-    #     accelerator.init_trackers(run)
     first_epoch = 0
     global_step = 0
     resume_step = 0
@@ -298,7 +294,12 @@ def main(args: Namespace):
     # ---------------------------- Resume from Checkpoint ----------------------------
     if args.resume_from_checkpoint:
         first_epoch, resume_step, global_step = resume_from_checkpoint(
-            args, logger, accelerator, num_update_steps_per_epoch, global_step
+            args,
+            logger,
+            accelerator,
+            num_update_steps_per_epoch,
+            global_step,
+            chckpt_save_path,
         )
     epoch = first_epoch
 
@@ -330,12 +331,25 @@ def main(args: Namespace):
             do_uncond_pass_across_all_procs=do_uncond_pass_across_all_procs,
             params_to_clip=params_to_optimize,
             tot_training_steps=tot_training_steps,
+            image_generation_tmp_save_folder=image_generation_tmp_save_folder,
+            fidelity_cache_root=fidelity_cache_root,
+            actual_eval_batch_sizes_for_this_process=actual_eval_batch_sizes_for_this_process,
+            nb_classes=nb_classes,
+            dataset=dataset,
+            raw_dataset=raw_dataset,
+            full_pipeline_save_folder=full_pipeline_save_folder,
+            repo=repo,
+            best_metric=best_metric if accelerator.is_main_process else None,
+            chckpt_save_path=chckpt_save_path,
         )
 
         # Generate sample images for visual inspection & metrics computation
-        if epoch % args.eval_save_model_every_epochs == 0 or (
-            args.precise_first_n_epochs is not None
-            and epoch < args.precise_first_n_epochs
+        if args.eval_save_model_every_epochs is not None and (
+            epoch % args.eval_save_model_every_epochs == 0
+            or (
+                args.precise_first_n_epochs is not None
+                and epoch < args.precise_first_n_epochs
+            )
         ):
             best_model_to_date, best_metric = generate_samples_and_compute_metrics(
                 args=args,
@@ -378,6 +392,7 @@ def main(args: Namespace):
 
         # do not start new epoch before generation & pipeline saving is done
         accelerator.wait_for_everyone()
+        epoch += 1
 
     accelerator.end_training()
 
