@@ -9,5 +9,5 @@
 	"num_train_timesteps": 3000,
 	"prediction_type": "v_prediction",
 	"rescale_betas_zero_snr": true,
-    "timestep_spacing": "trailing"
+	"timestep_spacing": "trailing"
 }
