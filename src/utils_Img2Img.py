@@ -196,7 +196,7 @@ def linear_interp_custom_guidance_inverted_start(
             pipe = pipe.to(distributed_state.device)
 
             # create save dir
-            save_dir: str = (
+            save_dir = (
                 output_dir
                 + f"/linear_interp_custom_guidance_inverted_start/{pipename}/{split}"
             )
@@ -209,7 +209,7 @@ def linear_interp_custom_guidance_inverted_start(
                 orig_class_labels = batch["class_labels"].to(distributed_state.device)
                 # only works for the binary case...
                 target_class_labels = 1 - orig_class_labels
-                filenames = batch["filenames_suffix"]
+                filenames = batch["file_basenames"]
 
                 # perform inversion
                 inverted_gauss = _inversion(
@@ -226,7 +226,7 @@ def linear_interp_custom_guidance_inverted_start(
                     images_to_save = [images_to_save]
 
                 for i, image_to_save in enumerate(images_to_save):
-                    save_filename: str = (
+                    save_filename = (
                         save_dir + f"/{filenames[i]}_to_{target_class_labels[i]}.png"
                     )
                     image_to_save.save(save_filename)
@@ -249,13 +249,14 @@ def load_datasets(cfg: DictConfig, dataset_name: str) -> Tuple[Dataset, Dataset]
 
     def transform_images(examples):
         images = [preproc(image.convert("RGB")) for image in examples["image"]]
-        filenames_suffix = [
-            image.filename.split("/")[-1].split(".")[0] for image in examples["image"]
+        file_basenames = [
+            os.path.splitext(os.path.basename(image.filename))[0]
+            for image in examples["image"]
         ]
         class_labels = torch.tensor(examples["label"]).long()
         return {
             "images": images,
-            "filenames_suffix": filenames_suffix,
+            "file_basenames": file_basenames,
             "class_labels": class_labels,
         }
 
