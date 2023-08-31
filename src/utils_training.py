@@ -28,7 +28,7 @@ from accelerate.logging import MultiProcessAdapter
 from diffusers import DDIMScheduler, UNet2DConditionModel
 from diffusers.training_utils import EMAModel
 from PIL.Image import Image
-from torch.utils.data import Subset
+from torch.utils.data import Subset, DataLoader
 from torchvision.datasets import ImageFolder
 from tqdm.auto import tqdm
 
@@ -49,9 +49,9 @@ from .utils_misc import (
 
 
 def resume_from_checkpoint(
-    args,
+    args: Namespace,
     logger: MultiProcessAdapter,
-    accelerator,
+    accelerator: Accelerator,
     num_update_steps_per_epoch: int,
     global_step: int,
     chckpt_save_path: Path,
@@ -91,9 +91,9 @@ def resume_from_checkpoint(
 
 
 def get_training_setup(
-    args,
-    accelerator,
-    train_dataloader,
+    args: Namespace,
+    accelerator: Accelerator,
+    train_dataloader: DataLoader,
     logger: MultiProcessAdapter,
     pipeline_components: list[str],
     components_to_train_transcribed: list[str],
@@ -152,7 +152,7 @@ def perform_training_epoch(
     ema_models: dict[str, EMAModel],
     components_to_train_transcribed: list[str],
     epoch: int,
-    train_dataloader,
+    train_dataloader: DataLoader,
     args: Namespace,
     first_epoch: int,
     resume_step: int,
@@ -169,7 +169,7 @@ def perform_training_epoch(
     nb_classes: int,
     dataset,
     raw_dataset,
-    full_pipeline_save_folder,
+    full_pipeline_save_folder: Path,
     repo,
     best_metric,
     chckpt_save_path: Path,

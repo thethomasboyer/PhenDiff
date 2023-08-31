@@ -255,7 +255,7 @@ def parse_args() -> Namespace:
         "--learning_rate",
         type=float,
         required=True,
-        help="Initial learning rate (after the potential warmup period) to use.",
+        help="Initial learning rate (after the potential warmup period) to use. Will be multiplied by the number of processes.",
     )
     parser.add_argument(
         "--lr_scheduler",

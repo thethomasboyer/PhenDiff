@@ -204,6 +204,12 @@ def main(args: Namespace):
         if module_name in components_to_train_transcribed:  # was EMA'ed
             params_to_optimize += list(pipeline.components[module_name].parameters())
 
+    # scale the learning rate linearly with the number of GPUs
+    logger.info(
+        f"Scaling learning rate with the number of GPUs (×{accelerator.num_processes})"
+    )
+    args.learning_rate *= accelerator.num_processes
+
     optimizer = torch.optim.AdamW(  # TODO: different params for different components
         params_to_optimize,
         lr=args.learning_rate,

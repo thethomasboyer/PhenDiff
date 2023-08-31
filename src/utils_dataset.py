@@ -116,9 +116,6 @@ def setup_dataset(
         class_labels = examples["label"]
         return {"images": images, "class_labels": class_labels}
 
-    logger.info(f"Dataset size: {len(dataset)}")
-    logger.info(f"Number of classes: {len(dataset.classes)}")
-
     if not args.use_pytorch_loader:
         raise NotImplementedError("Not tested yet")
         dataset.set_transform(transform_images)
