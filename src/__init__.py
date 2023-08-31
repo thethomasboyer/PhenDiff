@@ -10,11 +10,10 @@ from .utils_misc import (
     args_checker,
     create_repo_structure,
     setup_logger,
-    setup_xformers_memory_efficient_attention,
 )
 from .utils_models import load_initial_pipeline
 from .utils_training import (
-    generate_samples_and_compute_metrics,
+    generate_samples_compute_metrics_save_pipe,
     get_training_setup,
     perform_training_epoch,
     resume_from_checkpoint,
