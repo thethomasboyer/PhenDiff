@@ -17,7 +17,7 @@ from typing import List, Literal, Optional, Tuple, Union
 import torch
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline, ImagePipelineOutput
 from diffusers.schedulers import DDIMScheduler
-from diffusers.utils import randn_tensor
+from diffusers.utils import is_accelerate_available, randn_tensor
 
 DEFAULT_NUM_INFERENCE_STEPS = 50
 
@@ -43,6 +43,48 @@ class ConditionalDDIMPipeline(DiffusionPipeline):
         scheduler = DDIMScheduler.from_config(scheduler.config)
 
         self.register_modules(unet=unet, scheduler=scheduler)
+
+    def enable_model_cpu_offload(self, gpu_id=0):
+        r"""
+        Offload all models to CPU to reduce memory usage with a low impact on performance. Moves one whole model at a
+        time to the GPU when its `forward` method is called, and the model remains in GPU until the next model runs.
+        Memory savings are lower than using `enable_sequential_cpu_offload`, but performance is much better due to the
+        iterative execution of the `unet`.
+        """
+        if is_accelerate_available():
+            from accelerate import cpu_offload_with_hook
+        else:
+            raise ImportError("Could not import accelerate.")
+
+        device = torch.device(f"cuda:{gpu_id}")
+
+        if self.device.type != "cpu":
+            self.to("cpu", silence_dtype_warnings=True)
+            torch.cuda.empty_cache()  # otherwise we don't see the memory savings (but they probably exist)
+
+        _, hook = cpu_offload_with_hook(self.unet, device, prev_module_hook=None)
+
+        # We'll offload the last model manually.
+        self.final_offload_hook = hook
+
+    # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline._execution_device
+    @property
+    def _execution_device(self):
+        r"""
+        Returns the device on which the pipeline's models will be executed. After calling
+        `pipeline.enable_sequential_cpu_offload()` the execution device can only be inferred from Accelerate's module
+        hooks.
+        """
+        if not hasattr(self.unet, "_hf_hook"):
+            return self.device
+        for module in self.unet.modules():
+            if (
+                hasattr(module, "_hf_hook")
+                and hasattr(module._hf_hook, "execution_device")
+                and module._hf_hook.execution_device is not None
+            ):
+                return torch.device(module._hf_hook.execution_device)
+        return self.device
 
     def check_inputs(
         self,
@@ -165,6 +207,9 @@ class ConditionalDDIMPipeline(DiffusionPipeline):
             class_labels.shape[0] if class_labels is not None else class_emb.shape[0]
         )
 
+        # Device
+        device = self._execution_device
+
         # Sample gaussian noise to begin loop
         if isinstance(self.unet.config.sample_size, int):
             image_shape = (
@@ -186,7 +231,7 @@ class ConditionalDDIMPipeline(DiffusionPipeline):
             image = randn_tensor(
                 image_shape,
                 generator=generator,
-                device=self.device,
+                device=device,
                 dtype=self.unet.dtype,
             )
 
@@ -223,7 +268,7 @@ class ConditionalDDIMPipeline(DiffusionPipeline):
                     timestep=t,
                     class_labels=None,
                     class_emb=torch.zeros((batch_size, self.unet.time_embed_dim)).to(
-                        class_labels.device
+                        device
                     ),
                 ).sample
 
@@ -261,6 +306,10 @@ class ConditionalDDIMPipeline(DiffusionPipeline):
         image = image.cpu().permute(0, 2, 3, 1).numpy()
         if output_type == "pil":
             image = self.numpy_to_pil(image)
+
+        # Offload last model to CPU
+        if hasattr(self, "final_offload_hook") and self.final_offload_hook is not None:
+            self.final_offload_hook.offload()
 
         if not return_dict:
             return (image,)

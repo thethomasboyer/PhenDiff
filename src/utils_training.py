@@ -165,7 +165,7 @@ def perform_training_epoch(
     tot_training_steps: int,
     image_generation_tmp_save_folder: Path,
     fidelity_cache_root: Path,
-    actual_eval_batch_sizes_for_this_process,
+    actual_eval_batch_sizes_for_this_process: list[int],
     nb_classes: int,
     dataset,
     raw_dataset,
@@ -556,7 +556,7 @@ def generate_samples_compute_metrics_save_pipe(
     pipeline: CustomStableDiffusionImg2ImgPipeline | ConditionalDDIMPipeline,
     image_generation_tmp_save_folder: Path,
     fidelity_cache_root: Path,
-    actual_eval_batch_sizes_for_this_process,
+    actual_eval_batch_sizes_for_this_process: list[int],
     epoch: int,
     global_step: int,
     ema_models: dict[str, EMAModel],
@@ -569,6 +569,9 @@ def generate_samples_compute_metrics_save_pipe(
     full_pipeline_save_folder: Path,
     repo,
 ):
+    # try to clear cache before gen
+    torch.cuda.empty_cache()
+    # generate samples and compute metrics
     best_model_to_date, best_metric = _generate_samples_and_compute_metrics(
         args=args,
         accelerator=accelerator,
@@ -616,7 +619,7 @@ def _generate_samples_and_compute_metrics(
     pipeline: CustomStableDiffusionImg2ImgPipeline | ConditionalDDIMPipeline,
     image_generation_tmp_save_folder: Path,
     fidelity_cache_root: Path,
-    actual_eval_batch_sizes_for_this_process,
+    actual_eval_batch_sizes_for_this_process: list[int],
     epoch: int,
     global_step: int,
     ema_models: dict[str, EMAModel],
@@ -631,7 +634,6 @@ def _generate_samples_and_compute_metrics(
     progress_bar = tqdm(
         total=len(actual_eval_batch_sizes_for_this_process),
         desc=f"Generating images on process {accelerator.process_index}",
-        disable=not accelerator.is_local_main_process,
     )
 
     # 2. Use the EMA weights if applicable
@@ -662,9 +664,6 @@ def _generate_samples_and_compute_metrics(
         case _:
             raise ValueError(f"Unknown model type {args.model_type}")
     inference_pipeline.set_progress_bar_config(disable=True)
-
-    # some optimizations
-    inference_pipeline.enable_model_cpu_offload()
 
     # 4. Miscellaneous preparations
     # set manual seed in order to observe the outputs produced from the same Gaussian noise
@@ -735,6 +734,8 @@ def _generate_samples_and_compute_metrics(
         # wait for all processes to finish generating+saving images
         # before computing metrics
         accelerator.wait_for_everyone()
+        # try to clear cache after gen
+        torch.cuda.empty_cache()
 
         # compute metrics on main process for this class
         if accelerator.is_main_process:
