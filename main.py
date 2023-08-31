@@ -36,7 +36,7 @@ from src.utils_misc import (
 )
 from src.utils_models import load_initial_pipeline
 from src.utils_training import (
-    generate_samples_and_compute_metrics,
+    generate_samples_compute_metrics_save_pipe,
     get_training_setup,
     perform_training_epoch,
     resume_from_checkpoint,
@@ -351,44 +351,25 @@ def main(args: Namespace):
                 and epoch < args.precise_first_n_epochs
             )
         ):
-            best_model_to_date, best_metric = generate_samples_and_compute_metrics(
-                args=args,
-                accelerator=accelerator,
-                pipeline=pipeline,
-                image_generation_tmp_save_folder=image_generation_tmp_save_folder,
-                fidelity_cache_root=fidelity_cache_root,
-                actual_eval_batch_sizes_for_this_process=actual_eval_batch_sizes_for_this_process,
-                epoch=epoch,
-                global_step=global_step,
-                ema_models=ema_models,
-                components_to_train_transcribed=components_to_train_transcribed,
-                nb_classes=nb_classes,
-                logger=logger,
-                dataset=dataset,
-                raw_dataset=raw_dataset,
-                best_metric=best_metric if accelerator.is_main_process else None,
+            generate_samples_compute_metrics_save_pipe(
+                args,
+                accelerator,
+                pipeline,
+                image_generation_tmp_save_folder,
+                fidelity_cache_root,
+                actual_eval_batch_sizes_for_this_process,
+                epoch,
+                global_step,
+                ema_models,
+                components_to_train_transcribed,
+                nb_classes,
+                logger,
+                dataset,
+                raw_dataset,
+                best_metric if accelerator.is_main_process else None,
+                full_pipeline_save_folder,
+                repo,
             )
-            # save model if best to date
-            if accelerator.is_main_process:
-                # log best model indicator
-                accelerator.log(
-                    {
-                        "best_model_to_date": int(best_model_to_date),
-                    },
-                    step=global_step,
-                )
-                if epoch != 0 and best_model_to_date:
-                    save_pipeline(
-                        accelerator=accelerator,
-                        args=args,
-                        pipeline=pipeline,
-                        full_pipeline_save_folder=full_pipeline_save_folder,
-                        repo=repo,
-                        epoch=epoch,
-                        logger=logger,
-                        ema_models=ema_models,
-                        components_to_train_transcribed=components_to_train_transcribed,
-                    )
 
         # do not start new epoch before generation & pipeline saving is done
         accelerator.wait_for_everyone()

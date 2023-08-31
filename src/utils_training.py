@@ -317,44 +317,25 @@ def perform_training_epoch(
             args.eval_save_model_every_opti_steps is not None
             and global_step % args.eval_save_model_every_opti_steps == 0
         ):
-            best_model_to_date, best_metric = generate_samples_and_compute_metrics(
-                args=args,
-                accelerator=accelerator,
-                pipeline=pipeline,
-                image_generation_tmp_save_folder=image_generation_tmp_save_folder,
-                fidelity_cache_root=fidelity_cache_root,
-                actual_eval_batch_sizes_for_this_process=actual_eval_batch_sizes_for_this_process,
-                epoch=epoch,
-                global_step=global_step,
-                ema_models=ema_models,
-                components_to_train_transcribed=components_to_train_transcribed,
-                nb_classes=nb_classes,
-                logger=logger,
-                dataset=dataset,
-                raw_dataset=raw_dataset,
-                best_metric=best_metric if accelerator.is_main_process else None,
+            generate_samples_compute_metrics_save_pipe(
+                args,
+                accelerator,
+                pipeline,
+                image_generation_tmp_save_folder,
+                fidelity_cache_root,
+                actual_eval_batch_sizes_for_this_process,
+                epoch,
+                global_step,
+                ema_models,
+                components_to_train_transcribed,
+                nb_classes,
+                logger,
+                dataset,
+                raw_dataset,
+                best_metric,
+                full_pipeline_save_folder,
+                repo,
             )
-            # save model if best to date
-            if accelerator.is_main_process:
-                # log best model indicator
-                accelerator.log(
-                    {
-                        "best_model_to_date": int(best_model_to_date),
-                    },
-                    step=global_step,
-                )
-                if epoch != 0 and best_model_to_date:
-                    save_pipeline(
-                        accelerator=accelerator,
-                        args=args,
-                        pipeline=pipeline,
-                        full_pipeline_save_folder=full_pipeline_save_folder,
-                        repo=repo,
-                        epoch=epoch,
-                        logger=logger,
-                        ema_models=ema_models,
-                        components_to_train_transcribed=components_to_train_transcribed,
-                    )
 
     progress_bar.close()
 
@@ -562,14 +543,74 @@ def _syn_training_state(
                         f"\033[1;33mMORE THAN 1 CHECKPOINT TO DELETE:\033[0m\n {to_del}"
                     )
                 for dir in to_del:
-                    logger.info(f"Deleting {dir}...")
+                    logger.info(f"Deleting checkpoint {dir}...")
                     rmtree(Path(chckpt_save_path, dir))
 
     return global_step
 
 
 @torch.no_grad()
-def generate_samples_and_compute_metrics(
+def generate_samples_compute_metrics_save_pipe(
+    args: Namespace,
+    accelerator: Accelerator,
+    pipeline: CustomStableDiffusionImg2ImgPipeline | ConditionalDDIMPipeline,
+    image_generation_tmp_save_folder: Path,
+    fidelity_cache_root: Path,
+    actual_eval_batch_sizes_for_this_process,
+    epoch: int,
+    global_step: int,
+    ema_models: dict[str, EMAModel],
+    components_to_train_transcribed: list[str],
+    nb_classes: int,
+    logger: MultiProcessAdapter,
+    dataset: ImageFolder | Subset,
+    raw_dataset: ImageFolder | Subset,
+    best_metric: float | None,
+    full_pipeline_save_folder: Path,
+    repo,
+):
+    best_model_to_date, best_metric = _generate_samples_and_compute_metrics(
+        args=args,
+        accelerator=accelerator,
+        pipeline=pipeline,
+        image_generation_tmp_save_folder=image_generation_tmp_save_folder,
+        fidelity_cache_root=fidelity_cache_root,
+        actual_eval_batch_sizes_for_this_process=actual_eval_batch_sizes_for_this_process,
+        epoch=epoch,
+        global_step=global_step,
+        ema_models=ema_models,
+        components_to_train_transcribed=components_to_train_transcribed,
+        nb_classes=nb_classes,
+        logger=logger,
+        dataset=dataset,
+        raw_dataset=raw_dataset,
+        best_metric=best_metric if accelerator.is_main_process else None,
+    )
+    # save model if best to date
+    if accelerator.is_main_process:
+        # log best model indicator
+        accelerator.log(
+            {
+                "best_model_to_date": int(best_model_to_date),
+            },
+            step=global_step,
+        )
+        if epoch != 0 and best_model_to_date:
+            save_pipeline(
+                accelerator=accelerator,
+                args=args,
+                pipeline=pipeline,
+                full_pipeline_save_folder=full_pipeline_save_folder,
+                repo=repo,
+                epoch=epoch,
+                logger=logger,
+                ema_models=ema_models,
+                components_to_train_transcribed=components_to_train_transcribed,
+            )
+
+
+@torch.no_grad()
+def _generate_samples_and_compute_metrics(
     args: Namespace,
     accelerator: Accelerator,
     pipeline: CustomStableDiffusionImg2ImgPipeline | ConditionalDDIMPipeline,
@@ -621,6 +662,9 @@ def generate_samples_and_compute_metrics(
         case _:
             raise ValueError(f"Unknown model type {args.model_type}")
     inference_pipeline.set_progress_bar_config(disable=True)
+
+    # some optimizations
+    inference_pipeline.enable_model_cpu_offload()
 
     # 4. Miscellaneous preparations
     # set manual seed in order to observe the outputs produced from the same Gaussian noise
