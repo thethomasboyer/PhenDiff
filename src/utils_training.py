@@ -834,7 +834,6 @@ def _generate_save_images_for_this_class_DDIM(
             class_emb,
             args.guidance_factor,
             generator=generator,
-            batch_size=actual_bs,
             num_inference_steps=args.num_inference_steps,
             output_type="numpy",
         ).images
