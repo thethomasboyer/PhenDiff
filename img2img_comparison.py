@@ -13,51 +13,50 @@
 # limitations under the License.
 
 # TODO's:
-# +++ add the other methods
 # +++ adapt to Jean Zay
-# ++ add conditional metrics computation (requires != folders w.r.t. target labels + find_deep=True for uncond case)
-# ++ parallelize inference
-# ++ plug wandb
+# +++ parallelize inference
+# ++ add conditional metrics computation (requires != folders w.r.t. target labels)
+# ++ sweep
+# ++ log some images pairs
+# ++ add all (start type)/(transfer method) variants
 # + check if fp16 is used + other inference time optimizations
 # + save inverted Gaussians once per noise scheduler config?
 
 import logging
-from pathlib import Path
 
 import hydra
-import torch_fidelity
 from hydra.utils import call
 from omegaconf import DictConfig, OmegaConf
 
+import wandb
 from src.utils_Img2Img import (
-    classifier_free_guidance,
-    ddib,
-    linear_interp_custom_guidance_inverted_start,
+    compute_metrics,
     load_datasets,
+    perform_class_transfer_experiment,
 )
 
 BATCH_SIZES: dict[str, dict[str, dict[str, int]]] = {
     "rtx8000": {
         "DDIM": {
             "linear_interp_custom_guidance_inverted_start": 48,
-            "classifier_free_guidance": -1,
-            "ddib": -1,
+            "classifier_free_guidance_forward_start": 128,
+            "ddib": 128,
         },
         "SD": {
-            "linear_interp_custom_guidance_inverted_start": 64,
-            "classifier_free_guidance": -1,
-            "ddib": -1,
+            "linear_interp_custom_guidance_inverted_start": 128,
+            "classifier_free_guidance_forward_start": 256,
+            "ddib": 256,
         },
     },
     "a100": {
         "DDIM": {
             "linear_interp_custom_guidance_inverted_start": -1,
-            "classifier_free_guidance": -1,
+            "classifier_free_guidance_forward_start": -1,
             "ddib": -1,
         },
         "SD": {
             "linear_interp_custom_guidance_inverted_start": -1,
-            "classifier_free_guidance": -1,
+            "classifier_free_guidance_forward_start": -1,
             "ddib": -1,
         },
     },
@@ -77,8 +76,12 @@ def main(cfg: DictConfig) -> None:
     hydra_cfg = hydra.core.hydra_config.HydraConfig.get()
     output_dir: str = hydra_cfg["runtime"]["output_dir"]
 
+    # ------------------------------------------- Wandb -------------------------------------------
+    wandb.config = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
+    wandb.init(name=cfg.wandb.run_name, project=cfg.wandb.project, save_code=True)
+
     # --------------------------------- Load pretrained pipelines ---------------------------------
-    logger.info(f"Loading pipelines")
+    logger.info(f"\033[1m==========================> Loading pipelines\033[0m")
     pipes = call(cfg.pipeline)
 
     # ---------------------------------------- Load dataset ---------------------------------------
@@ -86,84 +89,47 @@ def main(cfg: DictConfig) -> None:
     dataset_name = next(iter(cfg.dataset))
 
     # load dataset TODO: directly instantiate from hydra?
-    logger.info(f"Loading dataset {dataset_name}")
+    logger.info(
+        f"\033[1m==========================> Loading dataset {dataset_name}\033[0m"
+    )
     train_dataset, test_dataset = load_datasets(cfg, dataset_name)
 
-    # --------------------------------- Class transfer experiments --------------------------------
+    # ---------------------------------------- Experiments ----------------------------------------
     for class_transfer_method in cfg.class_transfer_method:
-        match class_transfer_method:
-            case "linear_interp_custom_guidance_inverted_start":
-                logger.info("Running linear_interp_custom_guidance_inverted_start")
-                linear_interp_custom_guidance_inverted_start(
-                    pipes,
-                    train_dataset,
-                    test_dataset,
-                    cfg,
-                    output_dir,
-                    logger,
-                    BATCH_SIZES,
-                )
-            case "classifier_free_guidance":
-                logger.info("Running classifier_free_guidance")
-                classifier_free_guidance(
-                    pipes,
-                    train_dataset,
-                    test_dataset,
-                    cfg,
-                    output_dir,
-                    logger,
-                    BATCH_SIZES,
-                )
-            case "ddib":
-                logger.info("Running ddib")
-                ddib(
-                    pipes,
-                    train_dataset,
-                    test_dataset,
-                    cfg,
-                    output_dir,
-                    logger,
-                    BATCH_SIZES,
-                )
-            case _:
-                raise ValueError(
-                    f"Unknown class transfer method: {class_transfer_method}"
-                )
-
-    # ------------------------------------ Metrics computation ------------------------------------
-    for class_transfer_method in cfg.class_transfer_method:
-        for pipename in pipes:
-            for split, dataset in zip(
-                ["train", "test"], [cfg.dataset[dataset_name].root] * 2
-            ):
-                # 1. Unconditional
-                logger.info("Computing metrics (unconditional case)")
-                # get the images to compare
-                true_images = Path(dataset, split).as_posix()
-                generated_images = (
-                    output_dir + f"/{class_transfer_method}/{pipename}/{split}"
-                )
-                # compute metrics
-                metrics_dict = torch_fidelity.calculate_metrics(
-                    input1=true_images,
-                    input2=generated_images,
-                    cuda=True,
-                    batch_size=BATCH_SIZES[cfg.gpu][pipename][class_transfer_method],
-                    isc=cfg.compute_isc,
-                    fid=cfg.compute_fid,
-                    kid=cfg.compute_kid,
-                    verbose=False,
-                    # cache_root=fidelity_cache_root,
-                    # input1_cache_name=f"{class_name}",  # forces caching
-                    kid_subset_size=cfg.kid_subset_size,
-                    samples_find_deep=True,
-                )
-                # log metrics
-                logger.info(
-                    f"Metrics for {class_transfer_method} with {pipename} on {split} split: {metrics_dict}"
-                )
-
-                # 2. Conditional TODO
+        # Quick gen if debug flag
+        if cfg.debug:
+            num_inference_steps = 10
+            logger.warning(
+                f"Debug mode: setting num_inference_steps to {num_inference_steps}"
+            )
+        else:  # else let each pipeline have its own param
+            num_inference_steps = None
+        # ------------------------------------- Class transfer ------------------------------------
+        logger.info(
+            f"\033[1m==========================> Running {class_transfer_method}\033[0m"
+        )
+        perform_class_transfer_experiment(
+            class_transfer_method,
+            pipes,
+            train_dataset,
+            test_dataset,
+            cfg,
+            output_dir,
+            logger,
+            BATCH_SIZES,
+            num_inference_steps,
+        )
+        # ---------------------------------- Metrics computation ----------------------------------
+        logger.info(f"\033[1m==========================> Computing metrics\033[0m")
+        compute_metrics(
+            pipes,
+            cfg,
+            dataset_name,
+            logger,
+            output_dir,
+            class_transfer_method,
+            BATCH_SIZES,
+        )
 
 
 if __name__ == "__main__":

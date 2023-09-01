@@ -1,5 +1,8 @@
 defaults:
-  - class_transfer_method: linear_interp_custom_guidance_inverted_start
+  - class_transfer_method:
+      - linear_interp_custom_guidance_inverted_start
+      - classifier_free_guidance_forward_start
+      - ddib
   - dataset: BBBC021_comp_conc_nice_phen_high_conc_balanced
   - pipeline:
       - DDIM
@@ -14,6 +17,10 @@ kid_subset_size: 1000 # 1000 is the default
 debug: false
 
 gpu: a100
+
+wandb:
+  project: class_transfer
+  run_name: REMOVEME_test_run
 
 override hydra/job_logging: colorlog
 override hydra/hydra_logging: colorlog

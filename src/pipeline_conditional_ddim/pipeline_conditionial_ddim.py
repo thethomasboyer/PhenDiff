@@ -130,8 +130,8 @@ class ConditionalDDIMPipeline(DiffusionPipeline):
         if frac_diffusion_skipped is not None:
             assert (
                 isinstance(frac_diffusion_skipped, float)
-                and 0 <= frac_diffusion_skipped <= 1
-            ), "frac_diffusion_skipped must be a float between 0 and 1."
+                or isinstance(frac_diffusion_skipped, int)
+            ) and 0 <= frac_diffusion_skipped <= 1, "frac_diffusion_skipped must be a float (or int) between 0 and 1; got {frac_diffusion_skipped}."
 
     @torch.no_grad()
     def __call__(
@@ -177,8 +177,8 @@ class ConditionalDDIMPipeline(DiffusionPipeline):
                 A starting image to use for the diffusion process. If `None`, a random image is generated.
                 `frac_diffusion_skipped` must be passed if `start_image` is not `None`.
             frac_diffusion_skipped (`float`, *optional*, defaults to `None`):
-                The fraction of the diffusion process at. Must be passed if `start_image` is not `None`.
-                Should be between 0 and 1.
+                The fraction of the diffusion process to skip. Must be passed if `start_image` is not `None`.
+                Should be between 0 and 1. 0 therefore means full diffusion trajectory.
             guidance_eqn (`Literal["imagen", "CFG"]`, *optional*, defaults to `"imagen"`):
                 What guidance equation to use. Can be either that of the [Imagen](https://arxiv.org/pdf/2205.11487.pdf#subsection.2.2) paper
                 or that of the original [Classifier-Free Diffusion Guidance](https://arxiv.org/pdf/2207.12598.pdf#equation.3.6) paper.

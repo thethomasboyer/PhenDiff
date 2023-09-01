@@ -48,7 +48,6 @@ class CustomStableDiffusionImg2ImgPipeline(DiffusionPipeline):
     This model inherits from [`DiffusionPipeline`]. Check the superclass documentation for the generic methods the
     library implements for all the pipelines (such as downloading or saving, running on a particular device, etc.)
 
-
     Args:
         vae ([`AutoencoderKL`]):
             Variational Auto-Encoder (VAE) Model to encode and decode images to and from latent representations.
@@ -362,6 +361,7 @@ class CustomStableDiffusionImg2ImgPipeline(DiffusionPipeline):
 
         if (
             not isinstance(guidance_scale, float)
+            and not isinstance(guidance_scale, int)
             and not isinstance(guidance_scale, torch.Tensor)
             and guidance_scale is not None
         ):
@@ -391,7 +391,8 @@ class CustomStableDiffusionImg2ImgPipeline(DiffusionPipeline):
         dtype,
         device,
         latent_shape,
-        generator=None,
+        generator,
+        add_forward_noise_to_image: bool,
     ):
         if (
             not isinstance(image, (torch.Tensor, PIL.Image.Image, list))
@@ -433,12 +434,14 @@ class CustomStableDiffusionImg2ImgPipeline(DiffusionPipeline):
 
         init_latents = torch.cat([init_latents], dim=0)
 
-        noise = randn_tensor(
-            init_latents.shape, generator=generator, device=device, dtype=dtype
-        )
+        if add_forward_noise_to_image:
+            noise = randn_tensor(
+                init_latents.shape, generator=generator, device=device, dtype=dtype
+            )
 
-        # get latents
-        init_latents = self.scheduler.add_noise(init_latents, noise, timestep)
+            # get latents
+            print("DEBUG:", init_latents.shape, noise.shape, timestep.shape)
+            init_latents = self.scheduler.add_noise(init_latents, noise, timestep)
 
         return init_latents
 
@@ -456,6 +459,7 @@ class CustomStableDiffusionImg2ImgPipeline(DiffusionPipeline):
         latent_shape: Optional[Tuple[int, ...]] = None,
         class_labels: Optional[Union[int, List[int], torch.Tensor]] = None,
         strength: float = 0.8,
+        add_forward_noise_to_image: bool = True,
         num_inference_steps: Optional[int] = 50,
         guidance_scale: Optional[Union[float, torch.Tensor]] = DEFAULT_GUIDANCE_SCALE,
         eta: Optional[float] = 0.0,
@@ -502,7 +506,14 @@ class CustomStableDiffusionImg2ImgPipeline(DiffusionPipeline):
                 denoising steps depends on the amount of noise initially added. When `strength` is 1, added noise will
                 be maximum and the denoising process will run for the full number of iterations specified in
                 `num_inference_steps`. A value of 1, therefore, essentially ignores `image`. If `image` is `None`, strength
-                should be set to 1 (and not noise will actually be added to the generated, allready pure Gaussian noise).
+                should be set to 1 (and no noise will actually be added to the generated, allready pure Gaussian noise).
+                If `add_forward_noise_to_image` is set to `False`, no noise will actually be added and `strength` will
+                only correspond to the length of the denoising process, where 1 corresponds to the full trajectory and 0
+                means return the passed image as is.
+
+            - add_forward_noise_to_image (`bool`, *optional*, defaults to `True`)
+
+                Whether to add noise to the input image or not. See `strength` for more details.
 
             - num_inference_steps (`int`, *optional*, defaults to 50)
 
@@ -644,6 +655,7 @@ class CustomStableDiffusionImg2ImgPipeline(DiffusionPipeline):
             device=device,
             latent_shape=latent_shape,
             generator=generator,
+            add_forward_noise_to_image=add_forward_noise_to_image,
         )
 
         # cast guidance_scale to the correct dim for torch op
