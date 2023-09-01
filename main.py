@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from argparse import Namespace
-from math import inf
+from math import inf, sqrt
 from pathlib import Path
 
 import torch
@@ -205,11 +205,11 @@ def main(args: Namespace):
         if module_name in components_to_train_transcribed:  # was EMA'ed
             params_to_optimize += list(pipeline.components[module_name].parameters())
 
-    # scale the learning rate linearly with the number of GPUs
+    # scale the learning rate with the square root of the number of GPUs
     logger.info(
-        f"Scaling learning rate with the number of GPUs (×{accelerator.num_processes})"
+        f"Scaling learning rate with the number of GPUs (×{sqrt(accelerator.num_processes)})"
     )
-    args.learning_rate *= accelerator.num_processes
+    args.learning_rate *= sqrt(accelerator.num_processes)
 
     optimizer = torch.optim.AdamW(  # TODO: different params for different components
         params_to_optimize,
