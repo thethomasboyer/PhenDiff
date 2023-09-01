@@ -85,6 +85,7 @@ def main(args: Namespace):
                 "dir": args.exp_output_dirs_parent_folder,
                 "name": args.run_name,
                 "save_code": True,
+                "resume": True,
             }
         },
     )
