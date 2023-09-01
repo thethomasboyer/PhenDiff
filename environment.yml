@@ -1,4 +1,4 @@
-name: diffusion-experiments
+name: 
 channels:
 - conda-forge
 - huggingface
@@ -371,7 +371,7 @@ dependencies:
 - unicodedata2=15.0.0=py310h5764c6d_0
 - urllib3=2.0.3=pyhd8ed1ab_0
 - virtualenv=20.23.1=pyhd8ed1ab_0
-- wandb=0.15.5=pyhd8ed1ab_0
+- wandb=0.15.9=pyhd8ed1ab_0
 - wcwidth=0.2.6=pyhd8ed1ab_0
 - webencodings=0.5.1=py_1
 - websocket-client=1.6.0=pyhd8ed1ab_0
