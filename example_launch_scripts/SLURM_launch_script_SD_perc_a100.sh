@@ -1,0 +1,138 @@
+#!/bin/bash
+
+# TODO: adapt to multi-node setting:
+#   - requires a dynamic ACCELERATE_CONFIG, notably machine_rank
+
+echo -e "\n<--------------------------------------- launch_script_SD_perc_a100.sh --------------------------------------->\n"
+
+# ------------------------------------------> Variables <------------------------------------------
+exp_name=SD_perc_compare # experiment name; common to all runs in the same experiment
+
+exp_dirs_parent_folder=${SCRATCH}/comparison-experiments/experiments
+model_configs_folder=${HOME}/sources/diffusion-comparison-experiments/models_configs
+
+if [ "$1" == "--debug" ]; then
+    launch_command="srun --pty"
+    runtime="02:00:00"
+    qos="qos_gpu-dev"
+    outputs=""
+else
+    launch_command="sbatch"
+    runtime="20:00:00"
+    qos="qos_gpu-t3"
+fi
+
+# --------------------------------------> Accelerate config <--------------------------------------
+ACCELERATE_CONFIG="
+--multi_gpu
+--machine_rank=0
+--main_training_function=main
+--mixed_precision=fp16
+--num_machines=1
+--num_processes=${num_GPUS}
+--rdzv_backend=static
+--same_network
+--dynamo_backend=no
+"
+
+# ----------------------------------------> Echo commands <----------------------------------------
+echo -e "START TIME: $(date)\n"
+echo -e "EXPERIMENT NAME: ${exp_name}\n"
+echo -e "EXP_DIRS_PARENT_FOLDER: ${exp_dirs_parent_folder}\n"
+echo -e "ACCELERATE_CONFIG: ${ACCELERATE_CONFIG}\n"
+
+# --------------------------------------> Load compute envs <--------------------------------------
+module purge
+
+# Activate µmamba environment
+source ${HOME}/.bashrc
+micromamba deactivate
+micromamba activate -p ${SCRATCH}/micromamba/envs/diffusion-experiments
+
+# ----------------------------------------> Launch script <----------------------------------------
+percentages=(100 50 10 5 3 1)
+
+for perc in ${percentages[@]}; do
+
+    run_name=${perc}_perc # output folder name
+
+    if [ "$1" != "--debug" ]; then
+        run_output_folder=${exp_dirs_parent_folder}/${exp_name}/${run_name}
+        mkdir -p ${run_output_folder}
+        outputs="--error=${run_output_folder}/jobid-%j.err
+--output=${run_output_folder}/jobid-%j.out"
+    fi
+
+    num_GPUS=$((7 * perc / 100 + 1)) # *total* number of processes (i.e. accross all nodes) = number of GPUs
+
+    # -----------------------------------------> SLURM params <----------------------------------------
+    SBATCH_PARAMS="
+    --job-name=${run_name}
+    --constraint=a100
+    --nodes=1
+    --ntasks-per-node=1
+    --gres=gpu:${num_GPUS}
+    --cpus-per-task=$((64 * ${num_GPUS} / 8))
+    --hint=nomultithread 
+    --time=${runtime}
+    --qos=${qos}
+    --account=kio@a100
+    --mail-user=tboyer@bio.ens.psl.eu
+    --mail-type=FAIL
+    ${outputs}
+    "
+    # Recap: (see http://www.idris.fr/jean-zay/gpu/jean-zay-gpu-exec_partition_slurm.html)
+    #     QoS     | time limit | GPU limit / job
+    #  qos_gpu-t3 |     20h    |	512 GPUs
+    #  qos_gpu-t4 |    100h    |	 16 GPUs
+    # qos_gpu-dev |      2h    |     32 GPUs
+    # Note that qos_gpu-t4 is not available with A100 partitions!
+
+    # ----------------------------------------> Script + args <----------------------------------------
+    MAIN_SCRIPT=${HOME}/sources/diffusion-comparison-experiments/main.py
+
+    MAIN_SCRIPT_ARGS="
+    $1
+    --exp_output_dirs_parent_folder ${exp_dirs_parent_folder}
+    --experiment_name ${exp_name}
+    --run_name ${run_name}
+    --model_type StableDiffusion
+    --pretrained_model_name_or_path stabilityai/stable-diffusion-2-1
+    --components_to_train denoiser class_embedding
+    --noise_scheduler_config_path ${model_configs_folder}/noise_scheduler/better_SD_config_test.json
+    --num_inference_steps 100
+    --train_data_dir ${SCRATCH}/datasets/BBBC021_comp_conc_nice_phen_high_conc_balanced_no_aug
+    --perc_samples ${perc}
+    --seed 1234
+    --resolution 128
+    --train_batch_size 128
+    --eval_batch_size 768
+    --max_num_steps 30000
+    --learning_rate 1e-4
+    --mixed_precision fp16
+    --eval_save_model_every_opti_steps 1000
+    --nb_generated_images 6144
+    --checkpoints_total_limit 3
+    --checkpointing_steps 1000
+    --use_ema
+    --proba_uncond 0.1
+    --compute_fid
+    --compute_isc
+    --compute_kid
+    "
+    # ----------------------------------------> Echo commands <----------------------------------------
+    echo -e "MAIN_SCRIPT: ${MAIN_SCRIPT}\n"
+    echo -e "MAIN_SCRIPT_ARGS: ${MAIN_SCRIPT_ARGS}\n"
+    echo -e "SBATCH_PARAMS: ${SBATCH_PARAMS}\n"
+    echo -e "RUN_NAME: ${run_name}\n"
+
+    final_cmd="WANDB_MODE=offline ${launch_command} ${SBATCH_PARAMS} accelerate launch ${ACCELERATE_CONFIG} ${MAIN_SCRIPT} ${MAIN_SCRIPT_ARGS}"
+
+    if [ "$1" == "--debug" ]; then
+        eval ${final_cmd}
+    else
+        eval ${final_cmd} &
+    fi
+done
+
+exit 0
