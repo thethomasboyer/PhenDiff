@@ -384,6 +384,7 @@ def print_info_at_run_start(
     components_to_train_transcribed: list[str],
     noise_scheduler: DDIMScheduler,
     tot_nb_samples: int,
+    nb_tot_samples_raw_ds: int,
     total_batch_size: int,
     tot_training_steps: int,
 ):
@@ -443,8 +444,18 @@ def print_info_at_run_start(
     )
     _pretty_info_log(
         logger,
-        "Num examples",
+        "Total number of training examples",
         tot_nb_samples,
+    )
+    _pretty_info_log(
+        logger,
+        "Total number of examples in the reference dataset",
+        nb_tot_samples_raw_ds,
+    )
+    _pretty_info_log(
+        logger,
+        "Data augmentation on-the-fly",
+        args.data_aug_on_the_fly,
     )
     _pretty_info_log(
         logger,

@@ -72,7 +72,7 @@ def resume_from_checkpoint(
         path = Path(chckpt_save_path, dirs[-1]).as_posix() if len(dirs) > 0 else None
 
     if path is None:
-        logger.info(
+        logger.warning(
             f"Checkpoint '{args.resume_from_checkpoint}' does not exist. Starting a new training run."
         )
         args.resume_from_checkpoint = None
@@ -98,6 +98,7 @@ def get_training_setup(
     pipeline_components: list[str],
     components_to_train_transcribed: list[str],
     nb_tot_samples: int,
+    nb_tot_samples_raw_ds: int,
     noise_scheduler: DDIMScheduler,
     tot_training_steps: int,
 ) -> tuple[int, list[int]]:
@@ -138,6 +139,7 @@ def get_training_setup(
         components_to_train_transcribed,
         noise_scheduler,
         nb_tot_samples,
+        nb_tot_samples_raw_ds,
         total_batch_size,
         tot_training_steps,
     )
@@ -748,7 +750,7 @@ def _generate_samples_and_compute_metrics(
                 fidelity_cache_root=fidelity_cache_root,
                 accelerator=accelerator,
                 global_step=global_step,
-                main_metric_values=main_metric_values,
+                main_metric_values=main_metric_values,  # type: ignore
                 raw_dataset=raw_dataset,
             )
 
@@ -758,7 +760,7 @@ def _generate_samples_and_compute_metrics(
     # 6. Check if it is the best model to date
     if accelerator.is_main_process:
         best_model_to_date, best_metric = is_it_best_model(
-            main_metric_values, best_metric, logger, args
+            main_metric_values, best_metric, logger, args  # type: ignore
         )
     else:
         best_model_to_date = None

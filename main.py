@@ -85,7 +85,6 @@ def main(args: Namespace):
                 "dir": args.exp_output_dirs_parent_folder,
                 "name": args.run_name,
                 "save_code": True,
-                "resume": True,
             }
         },
     )
@@ -207,7 +206,7 @@ def main(args: Namespace):
 
     # scale the learning rate with the square root of the number of GPUs
     logger.info(
-        f"Scaling learning rate with the number of GPUs (×{sqrt(accelerator.num_processes)})"
+        f"Scaling learning rate with the (square root of the) number of GPUs (×{round(sqrt(accelerator.num_processes), 3)})"
     )
     args.learning_rate *= sqrt(accelerator.num_processes)
 
@@ -294,6 +293,7 @@ def main(args: Namespace):
         list(pipeline.components),
         components_to_train_transcribed,
         len(dataset),
+        len(raw_dataset),
         pipeline.scheduler,
         tot_training_steps,
     )
@@ -346,7 +346,7 @@ def main(args: Namespace):
             raw_dataset=raw_dataset,
             full_pipeline_save_folder=full_pipeline_save_folder,
             repo=repo,
-            best_metric=best_metric if accelerator.is_main_process else None,
+            best_metric=best_metric if accelerator.is_main_process else None,  # type: ignore
             chckpt_save_path=chckpt_save_path,
         )
 
@@ -373,7 +373,7 @@ def main(args: Namespace):
                 logger,
                 dataset,
                 raw_dataset,
-                best_metric if accelerator.is_main_process else None,
+                best_metric if accelerator.is_main_process else None,  # type: ignore
                 full_pipeline_save_folder,
                 repo,
             )

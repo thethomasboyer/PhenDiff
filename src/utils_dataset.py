@@ -15,6 +15,7 @@
 import random
 from argparse import Namespace
 from pathlib import Path
+from typing import Optional
 
 import torch
 from accelerate.logging import MultiProcessAdapter
@@ -48,7 +49,7 @@ class NoLabelsDataset(ImageFolder):
 
 def setup_dataset(
     args: Namespace, logger: MultiProcessAdapter
-) -> tuple[ImageFolder | Subset, ImageFolder | Subset, int]:
+) -> tuple[ImageFolder | Subset, NoLabelsDataset | Subset, int]:
     # Get the datasets: you can either provide your own training and evaluation files (see below)
     # or specify a Dataset from the hub (the dataset will be downloaded automatically from the datasets Hub).
 
@@ -88,20 +89,32 @@ def setup_dataset(
 
     if args.perc_samples is not None:
         logger.warning(
-            f"Subsampling the dataset to {args.perc_samples}% of samples per class"
+            f"Subsampling the training dataset to {args.perc_samples}% of samples per class"
         )
-        dataset, raw_dataset = select_subset_of_dataset(dataset, raw_dataset, args)
+        if not args.compute_metrics_full_dataset:
+            logger.warning(
+                f"Metrics computation will be done against the subsampled dataset"
+            )
+            dataset, raw_dataset = _select_subset_of_dataset(args, dataset, raw_dataset)
+        else:
+            dataset = _select_subset_of_dataset(args, dataset)  # type: ignore
 
-    # Preprocessing the datasets and DataLoaders creation.
-    transformations = transforms.Compose(
-        [
-            transforms.Resize(
-                args.resolution, interpolation=transforms.InterpolationMode.BILINEAR
-            ),
-            transforms.ToTensor(),
-            transforms.Normalize([0.5], [0.5]),  # map to [-1, 1] for SiLU
+    # Preprocessing the datasets and DataLoaders creation
+    # transforms for the training dataset
+    list_transforms = [
+        transforms.Resize(
+            args.resolution, interpolation=transforms.InterpolationMode.BILINEAR
+        ),
+        transforms.ToTensor(),
+        transforms.Normalize([0.5], [0.5]),  # map to [-1, 1] for SiLU
+    ]
+    if args.data_aug_on_the_fly:
+        list_transforms += [
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomVerticalFlip(),
         ]
-    )
+    transformations = transforms.Compose(list_transforms)
+    # transforms for the raw dataset
     raw_transformations = transforms.Compose(
         [
             transforms.Resize(
@@ -123,16 +136,18 @@ def setup_dataset(
     return dataset, raw_dataset, len(dataset.classes)
 
 
-def select_subset_of_dataset(
-    dataset: ImageFolder, raw_dataset: NoLabelsDataset, args: Namespace
-) -> tuple[Subset, Subset]:
-    """Subsamples the given dataset to have <perc_samples>% of each class."""
+def _select_subset_of_dataset(
+    args: Namespace,
+    full_dataset: ImageFolder,
+    full_raw_dataset: Optional[NoLabelsDataset] = None,
+) -> tuple[Subset, Subset] | Subset:
+    """Subsamples the given dataset(s) to have <perc_samples>% of each class."""
 
     # 1. First test if the dataset is balanced; for now we assume it is
     class_counts = dict.fromkeys(
-        [dataset.class_to_idx[cl] for cl in dataset.classes], 0
+        [full_dataset.class_to_idx[cl] for cl in full_dataset.classes], 0
     )
-    for _, label in dataset.samples:
+    for _, label in full_dataset.samples:
         class_counts[label] += 1
 
     nb_classes = len(class_counts)
@@ -151,7 +166,7 @@ def select_subset_of_dataset(
     sample_indices = []
 
     nb_selected_samples = dict.fromkeys(
-        [dataset.class_to_idx[cl] for cl in dataset.classes], 0
+        [full_dataset.class_to_idx[cl] for cl in full_dataset.classes], 0
     )
 
     # set seed
@@ -159,7 +174,7 @@ def select_subset_of_dataset(
     random.seed(args.seed)
 
     # random.sample(x, len(x)) shuffles x out-of-place
-    iterable = random.sample(list(enumerate(dataset.samples)), len(dataset))
+    iterable = random.sample(list(enumerate(full_dataset.samples)), len(full_dataset))
 
     for idx, (_, class_label) in iterable:
         # stop condition
@@ -177,16 +192,24 @@ def select_subset_of_dataset(
         len(sample_indices) == nb_selected_samples_per_class * nb_classes
     ), "Something went wrong in the subsampling..."
 
-    # 3. Return the subset
-    subset = Subset(dataset, sample_indices)
-    raw_subset = Subset(raw_dataset, sample_indices)
-    assert subset.indices == raw_subset.indices
+    # 3. Return the subset(s)
+    subset = Subset(full_dataset, sample_indices)
+    if full_raw_dataset is not None:
+        raw_subset = Subset(full_raw_dataset, sample_indices)
+        assert subset.indices == raw_subset.indices
+    else:
+        raw_subset = None
 
     # hacky but ok to do this because each class is present in the subset
-    subset.classes = dataset.classes
-    raw_subset.classes = raw_dataset.classes
+    subset.classes = full_dataset.classes
+    if full_raw_dataset is not None:
+        raw_subset.classes = full_raw_dataset.classes
 
-    subset.targets = [dataset.targets[i] for i in subset.indices]
-    raw_subset.targets = [raw_dataset.targets[i] for i in raw_subset.indices]
+    subset.targets = [full_dataset.targets[i] for i in subset.indices]
+    if full_raw_dataset is not None:
+        raw_subset.targets = [full_raw_dataset.targets[i] for i in raw_subset.indices]
 
-    return subset, raw_subset
+    if full_raw_dataset is not None:
+        return subset, raw_subset
+    else:
+        return subset

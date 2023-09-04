@@ -99,6 +99,18 @@ def parse_args() -> Namespace:
         help="The percentage of samples (∈ ]0; 100]) to use from the training dataset *inside each class*.",
     )
     parser.add_argument(
+        "--data_aug_on_the_fly",
+        action="store_true",
+        default=True,
+        help="Whether to apply data augmentation in the data loader or not. Only a horizontal & vertical random flip is applied if True.",
+    )
+    parser.add_argument(
+        "--compute_metrics_full_dataset",
+        action="store_true",
+        default=True,
+        help="Whether to compute the metrics w.r.t. the full nonsubsampled dataset, or on the training dataset.",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         help="A seed to use, for the base random library only, to subsample the dataset if perc_samples is not None (or 100). Allows to resume runs with the same subset.",
