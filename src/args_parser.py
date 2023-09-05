@@ -136,7 +136,8 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "--run_name",
         type=str,
-        help="The wandb run name. Generated at random by default.",
+        required=True,
+        help="The wandb run name.",
     )
     parser.add_argument(
         "--cache_dir",
@@ -150,21 +151,6 @@ def parse_args() -> Namespace:
         help=(
             "The resolution for input images, all the images in the train/validation dataset will be resized to this resolution"
         ),
-    )
-    parser.add_argument(
-        "--center_crop",
-        default=False,
-        action="store_true",
-        help=(
-            "Whether to center crop the input images to the resolution. If not set, the images will be randomly"
-            " cropped. The images will be resized to the resolution first before cropping."
-        ),
-    )
-    parser.add_argument(
-        "--random_flip",
-        default=False,
-        action="store_true",
-        help="whether to randomly flip images horizontally",
     )
     parser.add_argument(
         "--train_batch_size",
@@ -213,7 +199,7 @@ def parse_args() -> Namespace:
         help="Whether to evaluate the model every epoch during the first n epochs. Ignored if None.",
     )
     parser.add_argument("--compute_fid", action="store_true", default=True)
-    parser.add_argument("--compute_isc", action="store_true", default=False)
+    parser.add_argument("--compute_isc", action="store_true", default=True)
     parser.add_argument("--compute_kid", action="store_true", default=True)
     help_msg = "How many images to generate (per class) for metrics computation. "
     help_msg += (
@@ -230,10 +216,7 @@ def parse_args() -> Namespace:
         "--guidance_factor",
         type=float,
         help=(
-            "The scaling factor of the guidance. WARNING: it corresponds to 'ω' in the Imagen paper (https://arxiv.org/pdf/2205.11487.pdf) *for SD* "
-            "and in the Classifier-Free Diffusion Guidance paper *for DDIM*, respectively. To disable guidance, set to <=1 for SD, and to =0 for DDIM. "
-            "The unguided generation is respectively *un*conditional for SD and conditional for DDIM. "
-            "Note: ω_Imagen = 1 + ω_CFDG. TODO: harmonize."
+            "The scaling factor of the guidance. It corresponds to 'ω' in the Imagen paper (https://arxiv.org/pdf/2205.11487.pdf). Note that different models might have other implementations."
         ),
     )
     parser.add_argument(
@@ -383,13 +366,13 @@ def parse_args() -> Namespace:
         choices=["epsilon", "sample", "velocity"],
         help=(
             "Whether the model should predict the 'epsilon'/noise error, directly the reconstructed image 'x0', "
-            "or the velocity (see https://arxiv.org/abs/2202.00512). If None will use the prediction type of the pretrained model."
+            "or the velocity (see https://arxiv.org/abs/2202.00512). If None will use the prediction type of the pretrained model or of the given config."
         ),
     )
     parser.add_argument(
         "--num_train_timesteps",
         type=int,
-        help="If None will use the value of the pretrained model.",
+        help="If None will use the value of the pretrained model / given config.",
     )
     parser.add_argument(
         "--num_inference_steps",
