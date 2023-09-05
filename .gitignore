@@ -10,4 +10,5 @@ accelerate_configs
 outputs
 SD_playground.ipynb
 downloaded_models
+playground.ipynb
 pipeline_downloader.ipynb
