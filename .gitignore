@@ -8,3 +8,4 @@ accelerate_configs
 .ipynb_checkpoints/
 .initial_pipeline_save
 outputs
+local_launch_script.sh
