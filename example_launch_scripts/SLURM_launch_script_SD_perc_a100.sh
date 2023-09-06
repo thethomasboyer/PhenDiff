@@ -23,10 +23,15 @@ else
 fi
 
 # --------------------------------------> Accelerate config <--------------------------------------
+if [[ "$num_GPUS" -gt 1 ]]; then
+    acc_cfg="--multi_gpu"
+else
+    acc_cfg=""
+fi
+
 ACCELERATE_CONFIG="
---multi_gpu
+${acc_cfg}
 --machine_rank=0
---main_training_function=main
 --mixed_precision=fp16
 --num_machines=1
 --num_processes=${num_GPUS}

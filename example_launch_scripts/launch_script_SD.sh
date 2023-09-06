@@ -16,9 +16,15 @@ model_configs_folder=./models_configs
 num_GPUS=3 # *total* number of processes (i.e. accross all nodes) = number of GPUs
 
 # --------------------------------------> Accelerate config <--------------------------------------
+if [[ "$num_GPUS" -gt 1 ]]; then
+    acc_cfg="--multi_gpu"
+else
+    acc_cfg=""
+fi
+
 ACCELERATE_CONFIG="
+${acc_cfg}
 --machine_rank=0
---main_training_function=main
 --mixed_precision=fp16
 --num_machines=1
 --num_processes=${num_GPUS}
