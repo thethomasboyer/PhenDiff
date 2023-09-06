@@ -19,7 +19,11 @@ from pathlib import Path
 import torch
 from accelerate import Accelerator
 from accelerate.logging import MultiProcessAdapter, get_logger
-from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration
+from accelerate.utils import (
+    DistributedDataParallelKwargs,
+    ProjectConfiguration,
+    broadcast,
+)
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import EMAModel
 
@@ -273,9 +277,7 @@ def main(args: Namespace):
                 torch.rand(1) < args.proba_uncond
             )  # always true if proba_uncond == 1 as torch.rand -> [0;1[
         # broadcast tensor to all procs
-        main_proc_rank = torch.distributed.get_rank()
-        assert main_proc_rank == 0, f"Main proc rank is not 0 but {main_proc_rank}"
-    torch.distributed.broadcast(do_uncond_pass_across_all_procs, 0)
+        broadcast(do_uncond_pass_across_all_procs)
 
     # -------------------------------- Training Setup --------------------------------
     first_epoch = 0
