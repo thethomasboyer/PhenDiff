@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import os
-from logging import Logger
 from math import ceil
 from pathlib import Path
 from typing import Literal, Optional, Tuple
@@ -22,7 +21,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch_fidelity
-from accelerate import PartialState
+from accelerate import Accelerator
+from accelerate.logging import MultiProcessAdapter
 from datasets import load_dataset
 from diffusers.schedulers import DDIMInverseScheduler
 from omegaconf import DictConfig
@@ -40,6 +40,35 @@ from src.custom_pipeline_stable_diffusion_img2img import (
 from src.pipeline_conditional_ddim import ConditionalDDIMPipeline
 
 DEBUG_BATCHES_LIMIT = 0
+MAX_NB_LOGGED_IMAGES = 50
+
+
+class ClassTransferExperimentParams:
+    def __init__(
+        self,
+        class_transfer_method: str,
+        pipes: dict,
+        train_dataset: Dataset,
+        test_dataset: Dataset,
+        cfg: DictConfig,
+        output_dir: str,
+        logger: MultiProcessAdapter,
+        accelerator: Accelerator,
+        batch_sizes: dict[str, dict[str, dict[str, int]]],
+        num_inference_steps: Optional[int],
+        dataset_name: str,
+    ):
+        self.class_transfer_method = class_transfer_method
+        self.pipes = pipes
+        self.train_dataset = train_dataset
+        self.test_dataset = test_dataset
+        self.cfg = cfg
+        self.output_dir = output_dir
+        self.logger = logger
+        self.accelerator = accelerator
+        self.batch_sizes = batch_sizes
+        self.num_inference_steps = num_inference_steps
+        self.dataset_name = dataset_name
 
 
 @torch.no_grad()
@@ -183,20 +212,21 @@ def load_datasets(cfg: DictConfig, dataset_name: str) -> Tuple[Dataset, Dataset]
         }
 
     # instantiate datasets
-    train_dataset: Dataset = load_dataset(
+    train_dataset: Dataset = load_dataset(  # type: ignore
         "imagefolder",
         data_dir=cfg.dataset[dataset_name].root,
-        drop_labels=False,
         split="train",
     )
-    test_dataset: Dataset = load_dataset(
+    test_dataset: Dataset = load_dataset(  # type: ignore
         "imagefolder",
         data_dir=cfg.dataset[dataset_name].root,
-        drop_labels=False,
         split="test",
     )
-    train_dataset.set_transform(transform_images)
-    test_dataset.set_transform(transform_images)
+    train_dataset.set_transform(transform_images)  # type: ignore
+    test_dataset.set_transform(transform_images)  # type: ignore
+    # mimic PyTorch ImageFolder
+    train_dataset.classes = train_dataset.features["label"].names
+    test_dataset.classes = test_dataset.features["label"].names
 
     return train_dataset, test_dataset
 
@@ -229,401 +259,380 @@ def Lp_loss(
     return torch.linalg.vector_norm(x - y, dim=(1, 2, 3), ord=p)
 
 
-def perform_class_transfer_experiment(
-    class_transfer_method: str,
-    pipes: dict,
-    train_dataset: Dataset,
-    test_dataset: Dataset,
-    cfg: DictConfig,
-    output_dir: str,
-    logger: Logger,
-    batch_sizes: dict[str, dict[str, dict[str, int]]],
-    num_inference_steps: Optional[int],
-):
-    match class_transfer_method:
-        case "linear_interp_custom_guidance_inverted_start":
-            _linear_interp_custom_guidance_inverted_start(
-                pipes,
-                train_dataset,
-                test_dataset,
-                cfg,
-                output_dir,
-                logger,
-                batch_sizes,
-                num_inference_steps,
+def perform_class_transfer_experiment(args: ClassTransferExperimentParams):
+    """
+    Generate and save to disk the translated images for the specified class transfer method.
+
+    - Iterate first over the pipelines then over the dataset splits and finally on the actual data.
+
+    - Each translated batch is immediately saved to disk and the save directory structure is:
+
+    ```
+    output_dir/class_transfer_method/pipeline_name/split/target_class_name
+    ```
+    where `target_class_name` is the name of the class to which the images have been transferred.
+
+    - Images are further saved with the following naming convention:
+
+    ```
+    <original_file_basename>_to_<target_class_index>.png
+    ```
+    """
+    for pipename, pipe in args.pipes.items():
+        # get the number of inference steps
+        if args.num_inference_steps is None:
+            num_inference_steps = args.cfg.pipeline[pipename].num_inference_steps
+        else:
+            num_inference_steps = args.num_inference_steps
+
+        for split, dataset in zip(
+            ["train", "test"], [args.train_dataset, args.test_dataset]
+        ):
+            # Create dataloader
+            dataloader = torch.utils.data.DataLoader(  # type: ignore
+                dataset,
+                batch_size=args.batch_sizes[args.cfg.gpu][pipename][
+                    f"{args.class_transfer_method}"
+                ],
+                shuffle=True,
             )
-        case "classifier_free_guidance_forward_start":
-            _classifier_free_guidance_forward_start(
-                pipes,
-                train_dataset,
-                test_dataset,
-                cfg,
-                output_dir,
-                logger,
-                batch_sizes,
-                num_inference_steps,
+
+            # Distributed inference & device placement
+            dataloader = args.accelerator.prepare(dataloader)
+            pipe = pipe.to(args.accelerator.device)
+
+            # Create save dirs
+            save_dir = (
+                args.output_dir + f"/{args.class_transfer_method}/{pipename}/{split}"
             )
-        case "ddib":
-            _ddib(
-                pipes,
-                train_dataset,
-                test_dataset,
-                cfg,
-                output_dir,
-                logger,
-                batch_sizes,
-                num_inference_steps,
-            )
-        case _:
-            raise ValueError(f"Unknown class transfer method: {class_transfer_method}")
+            if args.accelerator.is_main_process:
+                per_target_class_dirs = [
+                    save_dir + f"/{class_name}" for class_name in dataset.classes  # type: ignore
+                ]
+                for per_target_class_dir in per_target_class_dirs:
+                    os.makedirs(per_target_class_dir)
+            args.accelerator.wait_for_everyone()
+
+            # Iterate over batches
+            for step, batch in enumerate(
+                tqdm(dataloader, desc=f"Running {pipename} on {split} dataset")
+            ):
+                # Get batch
+                clean_images = batch["images"].to(args.accelerator.device)
+                orig_class_labels = batch["class_labels"].to(args.accelerator.device)
+                # only works for the binary case...
+                target_class_labels = 1 - orig_class_labels
+                filenames = batch["file_basenames"]
+
+                match args.class_transfer_method:
+                    case "linear_interp_custom_guidance_inverted_start":
+                        images_to_save = _linear_interp_custom_guidance_inverted_start(
+                            pipe,
+                            clean_images,
+                            orig_class_labels,
+                            target_class_labels,
+                            args.cfg,
+                            num_inference_steps,
+                        )
+                    case "classifier_free_guidance_forward_start":
+                        images_to_save = _classifier_free_guidance_forward_start(
+                            pipe,
+                            clean_images,
+                            target_class_labels,
+                            args.cfg,
+                            num_inference_steps,
+                        )
+                    case "ddib":
+                        images_to_save = _ddib(
+                            pipe,
+                            clean_images,
+                            orig_class_labels,
+                            target_class_labels,
+                            num_inference_steps,
+                        )
+                    case _:
+                        raise ValueError(
+                            f"Unknown class transfer method: {args.class_transfer_method}"
+                        )
+
+                # Save images to disk
+                if isinstance(images_to_save, Image.Image):
+                    images_to_save = [images_to_save]
+                for i, image_to_save in enumerate(images_to_save):
+                    target_class_name = dataset.classes[target_class_labels[i]]  # type: ignore
+                    save_filename = (
+                        save_dir
+                        + f"/{target_class_name}"
+                        + f"/{filenames[i]}_to_{target_class_name}.png"
+                    )
+                    image_to_save.save(save_filename)  # type: ignore
+
+                # Log the first NB_LOGGED_IMAGES images (orig & transferred) to WandB
+                if step == 0 and args.accelerator.is_main_process:
+                    # original samples
+                    clean_images_processed_for_logging = (
+                        clean_images.detach()[:MAX_NB_LOGGED_IMAGES]
+                        .permute(0, 2, 3, 1)
+                        .cpu()
+                        .numpy()
+                    )
+                    orig_samples_to_log = [
+                        wandb.Image(
+                            clean_images_processed_for_logging[i],
+                            caption=filenames[i],
+                        )
+                        for i in range(len(clean_images_processed_for_logging))
+                    ]
+                    args.accelerator.log(
+                        {
+                            f"{args.class_transfer_method}/{pipename}/{split}/original_samples": orig_samples_to_log
+                        }
+                    )
+                    # transferred samples
+                    transferred_samples_to_log = [
+                        wandb.Image(
+                            images_to_save[i],
+                            caption=f"{filenames[i]}_to_{dataset.classes[target_class_labels[i]]}",
+                        )
+                        for i in range(len(clean_images_processed_for_logging))
+                    ]
+                    args.accelerator.log(
+                        {
+                            f"{args.class_transfer_method}/{pipename}/{split}/transferred_samples": transferred_samples_to_log
+                        }
+                    )
+
+                # Stop if debug flag
+                if args.cfg.debug and step >= DEBUG_BATCHES_LIMIT:
+                    args.logger.warn(
+                        f"debug flag: stopping after {DEBUG_BATCHES_LIMIT+1} batches"
+                    )
+                    break
 
 
 def compute_metrics(
-    pipes: dict,
-    cfg: DictConfig,
-    dataset_name: str,
-    logger: Logger,
-    output_dir: str,
-    class_transfer_method: str,
-    batch_sizes: dict[str, dict[str, dict[str, int]]],
+    args: ClassTransferExperimentParams,
 ):
-    for pipename in pipes:
+    for pipename in args.pipes:
         for split, dataset in zip(
-            ["train", "test"], [cfg.dataset[dataset_name].root] * 2
+            ["train", "test"], [args.cfg.dataset[args.dataset_name].root] * 2
         ):
+            bs = args.batch_sizes[args.cfg.gpu][pipename][args.class_transfer_method]
+
             # 1. Unconditional
-            logger.info("Computing metrics (unconditional case)")
+            args.logger.info("Computing metrics (unconditional case)")
             # get the images to compare
             true_images = Path(dataset, split).as_posix()
             generated_images = (
-                output_dir + f"/{class_transfer_method}/{pipename}/{split}"
+                args.output_dir + f"/{args.class_transfer_method}/{pipename}/{split}"
             )
             # compute metrics
             metrics_dict = torch_fidelity.calculate_metrics(
                 input1=true_images,
                 input2=generated_images,
                 cuda=True,
-                batch_size=batch_sizes[cfg.gpu][pipename][class_transfer_method] * 4,
-                isc=cfg.compute_isc,
-                fid=cfg.compute_fid,
-                kid=cfg.compute_kid,
+                batch_size=bs * 4,
+                isc=args.cfg.compute_isc,
+                fid=args.cfg.compute_fid,
+                kid=args.cfg.compute_kid,
                 verbose=False,
                 # cache_root=fidelity_cache_root,
                 # input1_cache_name=f"{class_name}",  # forces caching
-                kid_subset_size=cfg.kid_subset_size,
+                kid_subset_size=args.cfg.kid_subset_size,
                 samples_find_deep=True,
             )
             # log metrics
-            logger.info(
-                f"Metrics for {class_transfer_method} with {pipename} on {split} split: {metrics_dict}"
+            args.logger.info(
+                f"Unconditional metrics for {args.class_transfer_method} with {pipename} on {split} split: {metrics_dict}"
             )
-            wandb.log(
+            args.accelerator.log(
                 {
-                    f"{class_transfer_method}/{pipename}/{split}": metrics_dict,
+                    f"{args.class_transfer_method}/{pipename}/{split}/uncond": metrics_dict,
                 }
             )
 
-            # 2. Conditional TODO
-            logger.info("Computing metrics (conditional case)")
-
-
-def _ddib(
-    pipes: dict,
-    train_dataset: Dataset,
-    test_dataset: Dataset,
-    cfg: DictConfig,
-    output_dir: str,
-    logger: Logger,
-    batch_sizes: dict[str, dict[str, dict[str, int]]],
-    num_inference_steps: Optional[int],
-):
-    """TODO: docstring"""
-    for pipename, pipe in pipes.items():
-        # get the number of inference steps
-        if num_inference_steps is None:
-            num_inference_steps = cfg.pipeline[pipename].num_inference_steps
-
-        for split, dataset in zip(["train", "test"], [train_dataset, test_dataset]):
-            # Create dataloader
-            dataloader = torch.utils.data.DataLoader(
-                dataset,
-                batch_size=batch_sizes[cfg.gpu][pipename]["ddib"],
-                shuffle=True,
-            )
-
-            # Move pipe to GPU
-            distributed_state = PartialState()
-            pipe = pipe.to(distributed_state.device)
-
-            # Create save dir
-            save_dir = output_dir + f"/ddib/{pipename}/{split}"
-            os.makedirs(save_dir)
-
-            # Iterate over batches
-            for step, batch in enumerate(
-                tqdm(dataloader, desc=f"Running {pipename} on {split} dataset")
-            ):
-                # Get batch
-                clean_images = batch["images"].to(distributed_state.device)
-                orig_class_labels = batch["class_labels"].to(distributed_state.device)
-                # only works for the binary case...
-                target_class_labels = 1 - orig_class_labels
-                filenames = batch["file_basenames"]
-
-                # Preprocess inputs if LDM
-                # target_class_labels must be saved for filename
-                if isinstance(pipe, CustomStableDiffusionImg2ImgPipeline):
-                    clean_images, [orig_class_cond] = _LDM_preprocess(
-                        pipe, clean_images, [orig_class_labels]
-                    )
-                else:
-                    orig_class_cond = orig_class_labels
-                # Perform inversion
-                inverted_gauss = _inversion(
-                    pipe,
-                    pipename,
-                    clean_images,
-                    orig_class_cond,
-                    cfg,
-                    num_inference_steps,
+            # 2. Conditional
+            args.logger.info("Computing metrics (conditional case)")
+            # get the classes
+            classes = args.train_dataset.classes
+            assert (
+                classes == args.test_dataset.classes
+            ), "Expecting the same classes between train and test datasets"
+            # compute metrics per-class
+            for class_name in classes:
+                # get the images to compare
+                true_images = Path(dataset, split, class_name).as_posix()
+                generated_images = (
+                    args.output_dir
+                    + f"/{args.class_transfer_method}/{pipename}/{split}/{class_name}"
+                )  #                                                      ^^^^^^^^^^ this is the target class
+                # compute metrics
+                metrics_dict = torch_fidelity.calculate_metrics(
+                    input1=true_images,
+                    input2=generated_images,
+                    cuda=True,
+                    batch_size=bs * 4,
+                    isc=args.cfg.compute_isc,
+                    fid=args.cfg.compute_fid,
+                    kid=args.cfg.compute_kid,
+                    verbose=False,
+                    # cache_root=fidelity_cache_root,
+                    # input1_cache_name=f"{class_name}",  # forces caching
+                    kid_subset_size=args.cfg.kid_subset_size,
+                    samples_find_deep=False,
+                )
+                # log metrics
+                args.logger.info(
+                    f"Conditional metrics for {args.class_transfer_method} with {pipename} on {split} split & target class {class_name}: {metrics_dict}"
+                )
+                args.accelerator.log(
+                    {
+                        f"{args.class_transfer_method}/{pipename}/{split}/{class_name}": metrics_dict,
+                    }
                 )
 
-                # Perform generation
-                if isinstance(pipe, ConditionalDDIMPipeline):
-                    images_to_save = pipe(
-                        class_labels=target_class_labels,
-                        w=None,
-                        num_inference_steps=num_inference_steps,
-                        start_image=inverted_gauss,
-                        frac_diffusion_skipped=0,
-                    ).images
-                elif isinstance(pipe, CustomStableDiffusionImg2ImgPipeline):
-                    images_to_save = pipe(
-                        image=clean_images,
-                        class_labels=target_class_labels,
-                        strength=cfg.class_transfer_method.classifier_free_guidance_forward_start.frac_diffusion_skipped,
-                        add_forward_noise_to_image=False,
-                        num_inference_steps=num_inference_steps,
-                        guidance_scale=0,  # guidance_scale <= 1.0 disables guidance
-                    )
-                else:
-                    raise NotImplementedError
 
-                # Save images to disk
-                if isinstance(images_to_save, Image.Image):
-                    images_to_save = [images_to_save]
-                for i, image_to_save in enumerate(images_to_save):
-                    save_filename = (
-                        save_dir + f"/{filenames[i]}_to_{target_class_labels[i]}.png"
-                    )
-                    image_to_save.save(save_filename)
-
-                # Stop if debug flag
-                if cfg.debug and step >= DEBUG_BATCHES_LIMIT:
-                    logger.warn(
-                        f"debug flag: stopping after {DEBUG_BATCHES_LIMIT+1} batches"
-                    )
-                    break
-
-
-def _classifier_free_guidance_forward_start(
-    pipes: dict,
-    train_dataset: Dataset,
-    test_dataset: Dataset,
-    cfg: DictConfig,
-    output_dir: str,
-    logger: Logger,
-    batch_sizes: dict[str, dict[str, dict[str, int]]],
-    num_inference_steps: Optional[int],
+@torch.no_grad()
+def _ddib(
+    pipe,
+    clean_images: Tensor,
+    orig_class_labels: Tensor,
+    target_class_labels: Tensor,
+    num_inference_steps: int,
 ):
     """TODO: docstring"""
-    for pipename, pipe in pipes.items():
-        # get the number of inference steps
-        if num_inference_steps is None:
-            num_inference_steps = cfg.pipeline[pipename].num_inference_steps
+    # Preprocess inputs if LDM
+    # target_class_labels must be saved for filename
+    if isinstance(pipe, CustomStableDiffusionImg2ImgPipeline):
+        clean_images, [orig_class_cond] = _LDM_preprocess(  # type: ignore
+            pipe, clean_images, [orig_class_labels]
+        )
+    else:
+        orig_class_cond = orig_class_labels
 
-        for split, dataset in zip(["train", "test"], [train_dataset, test_dataset]):
-            # Create dataloader
-            dataloader = torch.utils.data.DataLoader(
-                dataset,
-                batch_size=batch_sizes[cfg.gpu][pipename][
-                    "classifier_free_guidance_forward_start"
-                ],
-                shuffle=True,
-            )
+    # Perform inversion
+    inverted_gauss = _inversion(
+        pipe,
+        clean_images,
+        orig_class_cond,
+        num_inference_steps,
+    )
 
-            # Move pipe to GPU
-            distributed_state = PartialState()
-            pipe = pipe.to(distributed_state.device)
+    # Perform generation
+    if isinstance(pipe, ConditionalDDIMPipeline):
+        images_to_save = pipe(
+            class_labels=target_class_labels,
+            w=None,
+            num_inference_steps=num_inference_steps,
+            start_image=inverted_gauss,
+            frac_diffusion_skipped=0,
+        ).images  # type: ignore
+    elif isinstance(pipe, CustomStableDiffusionImg2ImgPipeline):
+        images_to_save = pipe(
+            image=clean_images,
+            class_labels=target_class_labels,
+            strength=0,
+            add_forward_noise_to_image=False,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=0,  # guidance_scale <= 1.0 disables guidance
+        )
+    else:
+        raise NotImplementedError
 
-            # Create save dir
-            save_dir = (
-                output_dir
-                + f"/classifier_free_guidance_forward_start/{pipename}/{split}"
-            )
-            os.makedirs(save_dir)
+    return images_to_save
 
-            # Iterate over batches
-            for step, batch in enumerate(
-                tqdm(dataloader, desc=f"Running {pipename} on {split} dataset")
-            ):
-                # Get batch
-                clean_images = batch["images"].to(distributed_state.device)
-                orig_class_labels = batch["class_labels"].to(distributed_state.device)
-                # only works for the binary case...
-                target_class_labels = 1 - orig_class_labels
-                filenames = batch["file_basenames"]
 
-                # Perform guided generation
-                if isinstance(pipe, ConditionalDDIMPipeline):
-                    images_to_save = pipe(
-                        class_labels=target_class_labels,
-                        w=cfg.class_transfer_method.classifier_free_guidance_forward_start.guidance_scale,
-                        num_inference_steps=num_inference_steps,
-                        start_image=clean_images,
-                        frac_diffusion_skipped=cfg.class_transfer_method.classifier_free_guidance_forward_start.frac_diffusion_skipped,
-                    ).images
-                elif isinstance(pipe, CustomStableDiffusionImg2ImgPipeline):
-                    images_to_save = pipe(
-                        image=clean_images,
-                        class_labels=target_class_labels,
-                        strength=cfg.class_transfer_method.classifier_free_guidance_forward_start.frac_diffusion_skipped,
-                        num_inference_steps=num_inference_steps,
-                        guidance_scale=cfg.class_transfer_method.classifier_free_guidance_forward_start.guidance_scale,
-                    )
-                else:
-                    raise NotImplementedError
+@torch.no_grad()
+def _classifier_free_guidance_forward_start(
+    pipe,
+    clean_images: Tensor,
+    target_class_labels: Tensor,
+    cfg: DictConfig,
+    num_inference_steps: int,
+) -> Image.Image | list[Image.Image]:
+    """TODO: docstring"""
+    # Perform guided generation
+    this_exp_cfg = cfg.class_transfer_method.classifier_free_guidance_forward_start
+    guidance_scale = this_exp_cfg.guidance_scale
+    frac_diffusion_skipped = this_exp_cfg.frac_diffusion_skipped
 
-                # Save images to disk
-                if isinstance(images_to_save, Image.Image):
-                    images_to_save = [images_to_save]
-                for i, image_to_save in enumerate(images_to_save):
-                    save_filename = (
-                        save_dir + f"/{filenames[i]}_to_{target_class_labels[i]}.png"
-                    )
-                    image_to_save.save(save_filename)
+    if isinstance(pipe, ConditionalDDIMPipeline):
+        images_to_save = pipe(
+            class_labels=target_class_labels,
+            w=guidance_scale,
+            num_inference_steps=num_inference_steps,
+            start_image=clean_images,
+            frac_diffusion_skipped=frac_diffusion_skipped,
+        ).images  # type: ignore
+    elif isinstance(pipe, CustomStableDiffusionImg2ImgPipeline):
+        images_to_save = pipe(
+            image=clean_images,
+            class_labels=target_class_labels,
+            strength=frac_diffusion_skipped,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+        )
+    else:
+        raise NotImplementedError
 
-                # Stop if debug flag
-                if cfg.debug and step >= DEBUG_BATCHES_LIMIT:
-                    logger.warn(
-                        f"debug flag: stopping after {DEBUG_BATCHES_LIMIT+1} batches"
-                    )
-                    break
+    return images_to_save  # type: ignore
 
 
 def _linear_interp_custom_guidance_inverted_start(
-    pipes: dict,
-    train_dataset: Dataset,
-    test_dataset: Dataset,
+    pipe,
+    clean_images: Tensor,
+    orig_class_labels: Tensor,
+    target_class_labels: Tensor,
     cfg: DictConfig,
-    output_dir: str,
-    logger: Logger,
-    batch_sizes: dict[str, dict[str, dict[str, int]]],
-    num_inference_steps: Optional[int],
-):
+    num_inference_steps: int,
+) -> Image.Image | list[Image.Image]:
     """TODO: docstring"""
-    for pipename, pipe in pipes.items():
-        # get the number of inference steps
-        if num_inference_steps is None:
-            num_inference_steps = cfg.pipeline[pipename].num_inference_steps
+    # Preprocess inputs if LDM
+    # (target_class_labels must be saved for filename)
+    target_class_embeds = None
+    if isinstance(pipe, CustomStableDiffusionImg2ImgPipeline):
+        clean_images, (
+            orig_class_labels,
+            target_class_embeds,
+        ) = _LDM_preprocess(  # type: ignore
+            pipe, clean_images, [orig_class_labels, target_class_labels]
+        )
 
-        for split, dataset in zip(["train", "test"], [train_dataset, test_dataset]):
-            # Create dataloader
-            dataloader = torch.utils.data.DataLoader(
-                dataset,
-                batch_size=batch_sizes[cfg.gpu][pipename][
-                    "linear_interp_custom_guidance_inverted_start"
-                ],
-                shuffle=True,
-            )
+    # Perform inversion
+    inverted_gauss = _inversion(
+        pipe,
+        clean_images,
+        orig_class_labels,
+        num_inference_steps,
+    )
 
-            # Move pipe to GPU
-            distributed_state = PartialState()
-            pipe = pipe.to(distributed_state.device)
+    # Perform guided generation
+    target_cond = (
+        target_class_embeds if target_class_embeds is not None else target_class_labels
+    )
+    image = _custom_guided_generation(
+        pipe,
+        inverted_gauss,
+        target_cond,
+        cfg,
+        num_inference_steps,
+    )
 
-            # Create save dir
-            save_dir = (
-                output_dir
-                + f"/linear_interp_custom_guidance_inverted_start/{pipename}/{split}"
-            )
-            os.makedirs(save_dir)
+    # Decode from latent space if LDM
+    if isinstance(pipe, CustomStableDiffusionImg2ImgPipeline):
+        image = _decode_to_images(pipe, image)
+        # also normalize image back to [-1, 1]
+        image -= image.min()
+        image /= image.max()
+        image = image * 2 - 1
 
-            # Iterate over batches
-            for step, batch in enumerate(
-                tqdm(dataloader, desc=f"Running {pipename} on {split} dataset")
-            ):
-                # Get batch
-                clean_images = batch["images"].to(distributed_state.device)
-                orig_class_labels = batch["class_labels"].to(distributed_state.device)
-                # only works for the binary case...
-                target_class_labels = 1 - orig_class_labels
-                filenames = batch["file_basenames"]
+    images_to_save = tensor_to_PIL(image)
 
-                # Preprocess inputs if LDM
-                # target_class_labels must be saved for filename
-                target_class_embeds = None
-                if isinstance(pipe, CustomStableDiffusionImg2ImgPipeline):
-                    clean_images, (
-                        orig_class_labels,
-                        target_class_embeds,
-                    ) = _LDM_preprocess(
-                        pipe, clean_images, [orig_class_labels, target_class_labels]
-                    )
-
-                # Perform inversion
-                inverted_gauss = _inversion(
-                    pipe,
-                    pipename,
-                    clean_images,
-                    orig_class_labels,
-                    cfg,
-                    num_inference_steps,
-                )
-
-                # Perform guided generation
-                target_cond = (
-                    target_class_embeds
-                    if target_class_embeds is not None
-                    else target_class_labels
-                )
-                image = _custom_guided_generation(
-                    pipe,
-                    pipename,
-                    inverted_gauss,
-                    target_cond,
-                    cfg,
-                    num_inference_steps,
-                )
-
-                # Decode from latent space if LDM
-                if isinstance(pipe, CustomStableDiffusionImg2ImgPipeline):
-                    image = _decode_to_images(pipe, image)
-                    # also normalize image back to [-1, 1]
-                    image -= image.min()
-                    image /= image.max()
-                    image = image * 2 - 1
-
-                # Save images to disk
-                images_to_save = tensor_to_PIL(image)
-                if isinstance(images_to_save, Image.Image):
-                    images_to_save = [images_to_save]
-                for i, image_to_save in enumerate(images_to_save):
-                    save_filename = (
-                        save_dir + f"/{filenames[i]}_to_{target_class_labels[i]}.png"
-                    )
-                    image_to_save.save(save_filename)
-
-                # Stop if debug flag
-                if cfg.debug and step >= DEBUG_BATCHES_LIMIT:
-                    logger.warn(
-                        f"debug flag: stopping after {DEBUG_BATCHES_LIMIT+1} batches"
-                    )
-                    break
+    return images_to_save
 
 
 def _custom_guided_generation(
     pipe: ConditionalDDIMPipeline | CustomStableDiffusionImg2ImgPipeline,
-    pipename: str,
     input_images: Tensor,
     target_class_labels: Tensor,
     cfg: DictConfig,
@@ -689,10 +698,8 @@ def _custom_guided_generation(
 @torch.no_grad()
 def _inversion(
     pipe: ConditionalDDIMPipeline | CustomStableDiffusionImg2ImgPipeline,
-    pipename: str,
     input_images: Tensor,
     class_labels: Tensor,
-    cfg: DictConfig,
     num_inference_steps: int,
 ) -> Tensor:
     """TODO: docstring"""
@@ -700,7 +707,7 @@ def _inversion(
     gauss = input_images.clone().detach()
 
     # setup the inverted DDIM scheduler
-    DDIM_inv_scheduler: DDIMInverseScheduler = DDIMInverseScheduler.from_config(
+    DDIM_inv_scheduler: DDIMInverseScheduler = DDIMInverseScheduler.from_config(  # type: ignore
         pipe.scheduler.config,
     )
     DDIM_inv_scheduler.set_timesteps(num_inference_steps)
@@ -713,9 +720,9 @@ def _inversion(
 
         gauss = DDIM_inv_scheduler.step(
             model_output,
-            t,
-            gauss,
-        ).prev_sample
+            t,  # type: ignore
+            gauss,  # type: ignore
+        ).prev_sample  # type: ignore
 
     return gauss
 
@@ -765,3 +772,17 @@ def _decode_to_images(
     # decode
     images = pipe.vae.decode(latents, return_dict=False)[0]
     return images
+
+
+def modify_debug_args(cfg: DictConfig, logger: MultiProcessAdapter) -> Optional[int]:
+    # Quick gen if debug flag
+    if cfg.debug:
+        num_inference_steps = 10
+        logger.warning(
+            f"Debug mode: setting num_inference_steps to {num_inference_steps} and kid_subset_size to {DEBUG_BATCHES_LIMIT}"
+        )
+        cfg.kid_subset_size = DEBUG_BATCHES_LIMIT
+    else:  # else let each pipeline have its own param
+        num_inference_steps = None
+
+    return num_inference_steps
