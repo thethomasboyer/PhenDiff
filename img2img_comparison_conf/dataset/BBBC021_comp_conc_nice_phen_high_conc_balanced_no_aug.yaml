@@ -1,0 +1,5 @@
+BBBC021_comp_conc_nice_phen_high_conc_balanced_no_aug:
+  _target_: torchvision.datasets.ImageFolder # currently not used; TODO: instantiate with Hydra
+  root: /projects/deepdevpath/Thomas/data/BBBC021_comp_conc_nice_phen_high_conc_balanced_no_aug
+  resolution: 128
+  normalize: [0.5, 0.5] # map to [-1, 1] for SiLU
