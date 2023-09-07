@@ -100,16 +100,16 @@ def main(cfg: DictConfig) -> None:
 
     # ------------------------------------------- WandB -------------------------------------------
     setup_logger(logger, accelerator)
-    logger.info(f"Logging to project/run: {cfg.wandb.project}/{cfg.wandb.run_name}")
+    logger.info(f"Logging to project/run: {cfg.project}/{cfg.run_name}")
     accelerator.init_trackers(
-        project_name=cfg.wandb.project,
+        project_name=cfg.project,
         config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),  # type: ignore
         # save metadata to the "wandb" directory
         # inside the *parent* folder common to all *experiments*
         init_kwargs={
             "wandb": {
                 "dir": "outputs",  # hardcoded for now TODO
-                "name": cfg.wandb.run_name,
+                "name": cfg.run_name,
                 "save_code": True,
             }
         },
