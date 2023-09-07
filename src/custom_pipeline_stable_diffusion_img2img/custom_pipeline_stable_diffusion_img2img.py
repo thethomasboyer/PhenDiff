@@ -440,7 +440,6 @@ class CustomStableDiffusionImg2ImgPipeline(DiffusionPipeline):
             )
 
             # get latents
-            print("DEBUG:", init_latents.shape, noise.shape, timestep.shape)
             init_latents = self.scheduler.add_noise(init_latents, noise, timestep)
 
         return init_latents
