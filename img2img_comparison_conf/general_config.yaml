@@ -12,6 +12,10 @@ defaults:
 project: class_transfer
 run_name: REMOVEME_test_run
 
+hydra:
+  run:
+    dir: ./experiments/${project}/${run_name} # will replace/append to files if relaunched!
+
 debug: false
 gpu: a100
 mixed_precision: fp16
