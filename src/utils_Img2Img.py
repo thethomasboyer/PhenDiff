@@ -21,6 +21,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch_fidelity
+import wandb
 from accelerate import Accelerator
 from accelerate.logging import MultiProcessAdapter
 from datasets import load_dataset
@@ -33,7 +34,6 @@ from torch.utils.data import Dataset
 from torchvision import transforms
 from tqdm.auto import tqdm
 
-import wandb
 from src.custom_pipeline_stable_diffusion_img2img import (
     CustomStableDiffusionImg2ImgPipeline,
 )
@@ -54,7 +54,6 @@ class ClassTransferExperimentParams:
         output_dir: str,
         logger: MultiProcessAdapter,
         accelerator: Accelerator,
-        batch_sizes: dict[str, dict[str, dict[str, int]]],
         num_inference_steps: Optional[int],
         dataset_name: str,
     ):
@@ -66,7 +65,6 @@ class ClassTransferExperimentParams:
         self.output_dir = output_dir
         self.logger = logger
         self.accelerator = accelerator
-        self.batch_sizes = batch_sizes
         self.num_inference_steps = num_inference_steps
         self.dataset_name = dataset_name
 
@@ -291,7 +289,7 @@ def perform_class_transfer_experiment(args: ClassTransferExperimentParams):
             # Create dataloader
             dataloader = torch.utils.data.DataLoader(  # type: ignore
                 dataset,
-                batch_size=args.batch_sizes[args.cfg.gpu][pipename][
+                batch_size=args.cfg.batch_sizes[pipename][
                     f"{args.class_transfer_method}"
                 ],
                 shuffle=True,
@@ -417,7 +415,7 @@ def compute_metrics(
         for split, dataset in zip(
             ["train", "test"], [args.cfg.dataset[args.dataset_name].root] * 2
         ):
-            bs = args.batch_sizes[args.cfg.gpu][pipename][args.class_transfer_method]
+            bs = args.cfg.batch_sizes[pipename][args.class_transfer_method]
 
             # 1. Unconditional
             args.logger.info("Computing metrics (unconditional case)")
@@ -646,9 +644,7 @@ def _custom_guided_generation(
     pipe.scheduler.set_timesteps(num_inference_steps)
 
     # perform guided generation
-    for t in tqdm(
-        pipe.scheduler.timesteps, desc="Computing guided generation", leave=False
-    ):
+    for t in pipe.scheduler.timesteps:
         # 0. reset grads on images
         images = images.detach().requires_grad_()
 
@@ -713,9 +709,7 @@ def _inversion(
     DDIM_inv_scheduler.set_timesteps(num_inference_steps)
 
     # invert the diffeq
-    for t in tqdm(
-        DDIM_inv_scheduler.timesteps, desc="Computing inverted Gaussians", leave=False
-    ):
+    for t in DDIM_inv_scheduler.timesteps:
         model_output = pipe.unet(gauss, t, class_labels).sample
 
         gauss = DDIM_inv_scheduler.step(

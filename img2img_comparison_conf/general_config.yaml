@@ -8,23 +8,27 @@ defaults:
       - DDIM
       - SD
   - _self_
+  - batch_sizes: a100-80gb
+
+exp_parent_folder: ${oc.env:SCRATCH}/comparison-experiments/experiments
 
 project: class_transfer
 run_name: REMOVEME_test_run
 
 hydra:
   run:
-    dir: ./experiments/${project}/${run_name} # will replace/append to files if relaunched!
+    dir: ${exp_parent_folder}/${project}/${run_name} # will replace/append to files if relaunched!
+
+output_folder: ${hydra:run.dir}
 
 debug: false
-gpu: a100
+monitor: false
+slurm: true
+
 mixed_precision: fp16
-num_GPUs: 8
+num_GPUs: 1
 
 compute_fid: true
 compute_isc: true
 compute_kid: true
 kid_subset_size: 1000 # 1000 is the default
-
-override hydra/job_logging: colorlog
-override hydra/hydra_logging: colorlog

@@ -1,7 +1,8 @@
 SD:
   # instantiation args
   _target_: src.custom_pipeline_stable_diffusion_img2img.CustomStableDiffusionImg2ImgPipeline.from_pretrained
-  pretrained_model_name_or_path: experiments/SD_100_perc/full_pipeline_save
+  pretrained_model_name_or_path: ${exp_parent_folder}/SD_100_perc/full_pipeline_save
+  local_files_only: true
   # torch_dtype: fp16
 
   # other args; these "are not expected [...] and will be ignored" at instantiation
