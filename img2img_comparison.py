@@ -28,6 +28,7 @@
 # + check if fp16 is used + other inference time optimizations
 # + save inverted Gaussians once per noise scheduler config?
 
+
 import hydra
 from accelerate import Accelerator
 from accelerate.logging import get_logger
@@ -42,46 +43,6 @@ from src.utils_Img2Img import (
     perform_class_transfer_experiment,
 )
 from src.utils_misc import setup_logger
-
-BATCH_SIZES: dict[str, dict[str, dict[str, int]]] = {
-    "rtx8000": {
-        "DDIM": {
-            "linear_interp_custom_guidance_inverted_start": 48,
-            "classifier_free_guidance_forward_start": 128,
-            "ddib": 128,
-        },
-        "SD": {
-            "linear_interp_custom_guidance_inverted_start": 128,
-            "classifier_free_guidance_forward_start": 256,
-            "ddib": 256,
-        },
-    },
-    "a100": {
-        "DDIM": {
-            "linear_interp_custom_guidance_inverted_start": -1,
-            "classifier_free_guidance_forward_start": -1,
-            "ddib": -1,
-        },
-        "SD": {
-            "linear_interp_custom_guidance_inverted_start": -1,
-            "classifier_free_guidance_forward_start": -1,
-            "ddib": -1,
-        },
-    },
-    "M40-12GB": {
-        "DDIM": {
-            "linear_interp_custom_guidance_inverted_start": 12,
-            "classifier_free_guidance_forward_start": 32,
-            "ddib": 32,
-        },
-        "SD": {
-            "linear_interp_custom_guidance_inverted_start": 32,
-            "classifier_free_guidance_forward_start": 64,
-            "ddib": 64,
-        },
-    },
-}
-
 
 logger = get_logger(__name__, log_level="INFO")
 
@@ -108,7 +69,7 @@ def main(cfg: DictConfig) -> None:
         # inside the *parent* folder common to all *experiments*
         init_kwargs={
             "wandb": {
-                "dir": "outputs",  # hardcoded for now TODO
+                "dir": cfg.exp_parent_folder,
                 "name": cfg.run_name,
                 "save_code": True,
             }
@@ -147,7 +108,6 @@ def main(cfg: DictConfig) -> None:
         "output_dir": output_dir,
         "accelerator": accelerator,
         "logger": logger,
-        "batch_sizes": BATCH_SIZES,
         "dataset_name": dataset_name,
     }
 
