@@ -56,6 +56,7 @@ class ClassTransferExperimentParams:
         accelerator: Accelerator,
         num_inference_steps: Optional[int],
         dataset_name: str,
+        fidelity_cache_root: str,
     ):
         self.class_transfer_method = class_transfer_method
         self.pipes = pipes
@@ -67,6 +68,7 @@ class ClassTransferExperimentParams:
         self.accelerator = accelerator
         self.num_inference_steps = num_inference_steps
         self.dataset_name = dataset_name
+        self.fidelity_cache_root = fidelity_cache_root
 
 
 @torch.no_grad()
@@ -415,7 +417,14 @@ def compute_metrics(
         for split, dataset in zip(
             ["train", "test"], [args.cfg.dataset[args.dataset_name].root] * 2
         ):
+            # 0. Misc.
             bs = args.cfg.batch_sizes[pipename][args.class_transfer_method]
+
+            nb_samples = len(dataset)
+            if nb_samples < args.cfg.min_kid_subset_size:
+                compute_kid = False
+            else:
+                compute_kid = True
 
             # 1. Unconditional
             args.logger.info("Computing metrics (unconditional case)")
@@ -432,10 +441,10 @@ def compute_metrics(
                 batch_size=bs * 4,
                 isc=args.cfg.compute_isc,
                 fid=args.cfg.compute_fid,
-                kid=args.cfg.compute_kid,
+                kid=compute_kid,
                 verbose=False,
-                # cache_root=fidelity_cache_root,
-                # input1_cache_name=f"{class_name}",  # forces caching
+                cache_root=args.fidelity_cache_root,
+                # input1_cache_name=f"{class_name}",  # TODO: force caching
                 kid_subset_size=args.cfg.kid_subset_size,
                 samples_find_deep=True,
             )
@@ -472,10 +481,10 @@ def compute_metrics(
                     batch_size=bs * 4,
                     isc=args.cfg.compute_isc,
                     fid=args.cfg.compute_fid,
-                    kid=args.cfg.compute_kid,
+                    kid=compute_kid,
                     verbose=False,
-                    # cache_root=fidelity_cache_root,
-                    # input1_cache_name=f"{class_name}",  # forces caching
+                    cache_root=args.fidelity_cache_root,
+                    # input1_cache_name=f"{class_name}",  # TODO: force caching
                     kid_subset_size=args.cfg.kid_subset_size,
                     samples_find_deep=False,
                 )

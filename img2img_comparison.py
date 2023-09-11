@@ -23,13 +23,16 @@
 
 
 # TODO's:
+# +++ merge with img2img_comparison_SLURM.py
 # ++ sweep
 # ++ add all (start type)/(transfer method) variants
 # + check if fp16 is used + other inference time optimizations
 # + save inverted Gaussians once per noise scheduler config?
 
+from pathlib import Path
 
 import hydra
+import torch
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from hydra.utils import call
@@ -77,11 +80,17 @@ def main(cfg: DictConfig) -> None:
     )
 
     # ------------------------------------------- Misc. -------------------------------------------
+    # show config
     logger.info(f"Passed config:\n{OmegaConf.to_yaml(cfg)}")
+    # get output dir
     hydra_cfg = hydra.core.hydra_config.HydraConfig.get()  # type: ignore
     output_dir: str = hydra_cfg["runtime"]["output_dir"]
+    # set cache folders
+    fidelity_cache_root: Path = Path(cfg.exp_parent_folder, ".fidelity_cache")
+    torch_hub_cache_dir = Path(cfg.exp_parent_folder, ".torch_hub_cache")
+    torch.hub.set_dir(torch_hub_cache_dir)
 
-    # --------------------------------- Debug ---------------------------------
+    # ------------------------------------------- Debug -------------------------------------------
     num_inference_steps = modify_debug_args(cfg, logger)
 
     # --------------------------------- Load pretrained pipelines ---------------------------------
@@ -109,6 +118,7 @@ def main(cfg: DictConfig) -> None:
         "accelerator": accelerator,
         "logger": logger,
         "dataset_name": dataset_name,
+        "fidelity_cache_root": fidelity_cache_root,
     }
 
     # Sweep over experiments

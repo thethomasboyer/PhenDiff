@@ -17,13 +17,13 @@ import sys
 
 import hydra
 import submitit
-from hydra.core.hydra_config import HydraConfig
-from omegaconf import DictConfig
+from omegaconf import DictConfig, ListConfig
 
 
 class Task:
-    def __init__(self, cfg: DictConfig):
+    def __init__(self, cfg: DictConfig, overrides: ListConfig):
         self.cfg: DictConfig = cfg
+        self.overrides: ListConfig = overrides
 
     def __call__(self):
         # Accelerate config
@@ -37,16 +37,15 @@ class Task:
         if self.cfg.num_GPUs != 1:
             accelerate_cfg += " --multi_gpu"
 
-        # Launched command # TODO:
+        # Launched command
         final_cmd = (
             "WANDB_MODE=offline HF_DATASETS_OFFLINE=1 accelerate launch "
             + accelerate_cfg
             + " img2img_comparison.py"
         )
 
-        # pass (non-hydra-specific) CL overrides to img2img_comparison
-        overrides = HydraConfig.get().overrides.task
-        print("################### DEBUG overrides", overrides)
+        for override in self.overrides:
+            final_cmd += f" {override}"
 
         print("Executing command: ", final_cmd)
 
@@ -72,6 +71,17 @@ def main(cfg: DictConfig) -> None:
         runtime = "20:00:00"
         qos = "qos_gpu-t3"
 
+    additional_parameters = {
+        "hint": "nomultithread",
+        "mail_user": "tboyer@bio.ens.psl.eu",
+        "mail_type": "FAIL",
+    }
+    if cfg.debug:
+        pass  # TODO: find how to use pty with submitit
+    else:
+        additional_parameters["output"] = f"{cfg.output_folder}/jobid-%j.out"
+        additional_parameters["error"] = f"{cfg.output_folder}/jobid-%j.err"
+
     executor.update_parameters(
         slurm_job_name=f"{cfg.project}-{cfg.run_name}",
         slurm_constraint="a100",
@@ -79,26 +89,18 @@ def main(cfg: DictConfig) -> None:
         slurm_ntasks_per_node=1,
         slurm_gres=f"gpu:{cfg.num_GPUs}",
         slurm_cpus_per_task=int(64 * cfg.num_GPUs / 8),
-        slurm_additional_parameters={
-            "hint": "nomultithread",
-            "mail_user": "tboyer@bio.ens.psl.eu",
-            "mail_type": "FAIL",
-        },
+        slurm_additional_parameters=additional_parameters,
         slurm_time=runtime,
         slurm_qos=qos,
         slurm_account="kio@a100",
     )
-    if cfg.debug:
-        pass  # TODO: find how to use pty with submitit
-        # executor.update_parameters(slurm_srun_args=["--pty"])
-    else:
-        executor.update_parameters(
-            slurm_error=f"{cfg.output_folder}/jobid-%j.err",
-            slurm_output=f"{cfg.output_folder}/jobid-%j.out",
-        )
+
+    # CL overrides
+    hydra_cfg = hydra.core.hydra_config.HydraConfig.get()  # type: ignore
+    overrides: ListConfig = hydra_cfg.overrides.task
 
     # Task
-    task = Task(cfg)
+    task = Task(cfg, overrides)
 
     # Submit
     job = executor.submit(task)
