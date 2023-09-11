@@ -341,7 +341,7 @@ def perform_training_epoch(
 
     progress_bar.close()
 
-    # wait for everybody at each end of training epoch
+    # wait for everybody at end of each training epoch
     accelerator.wait_for_everyone()
 
     return global_step

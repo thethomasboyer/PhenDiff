@@ -267,8 +267,8 @@ def main(args: Namespace):
 
     # synchronize the conditional & unconditional passes of CLF guidance training between the GPUs
     # to circumvent a nasty and unexplained bug...
-    do_uncond_pass_across_all_procs: torch.BoolTensor = torch.zeros(
-        (total_dataloader_len,), device=accelerator.device, dtype=torch.bool
+    do_uncond_pass_across_all_procs = torch.zeros(
+        (total_dataloader_len,), device=accelerator.device
     )
     if accelerator.is_main_process:
         # fill tensor on main proc
@@ -276,8 +276,8 @@ def main(args: Namespace):
             do_uncond_pass_across_all_procs[batch_idx] = (
                 torch.rand(1) < args.proba_uncond
             )  # always true if proba_uncond == 1 as torch.rand -> [0;1[
-        # broadcast tensor to all procs
-        broadcast(do_uncond_pass_across_all_procs)
+    # broadcast tensor to all procs
+    do_uncond_pass_across_all_procs = broadcast(do_uncond_pass_across_all_procs)
 
     # -------------------------------- Training Setup --------------------------------
     first_epoch = 0
