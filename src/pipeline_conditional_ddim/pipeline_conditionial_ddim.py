@@ -20,6 +20,7 @@ from diffusers.schedulers import DDIMScheduler
 from diffusers.utils import is_accelerate_available, randn_tensor
 
 DEFAULT_NUM_INFERENCE_STEPS = 50
+DEFAULT_GUIDANCE_SCALE = 4.5
 
 
 class ConditionalDDIMPipeline(DiffusionPipeline):
@@ -36,11 +37,11 @@ class ConditionalDDIMPipeline(DiffusionPipeline):
             [`DDPMScheduler`], or [`DDIMScheduler`].
     """
 
-    def __init__(self, unet, scheduler):
+    def __init__(self, unet, scheduler: DDIMScheduler):
         super().__init__()
 
         # make sure scheduler can always be converted to DDIM
-        scheduler = DDIMScheduler.from_config(scheduler.config)
+        scheduler: DDIMScheduler = DDIMScheduler.from_config(scheduler.config)  # type: ignore
 
         self.register_modules(unet=unet, scheduler=scheduler)
 
@@ -90,7 +91,7 @@ class ConditionalDDIMPipeline(DiffusionPipeline):
         self,
         class_labels: Optional[torch.Tensor] = None,
         class_emb: Optional[torch.Tensor] = None,
-        w: Optional[Union[float, torch.Tensor]] = None,
+        w: Optional[Union[int, float, torch.Tensor]] = None,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         frac_diffusion_skipped: Optional[float] = None,
         start_image: Optional[torch.Tensor] = None,
@@ -113,9 +114,10 @@ class ConditionalDDIMPipeline(DiffusionPipeline):
 
         assert (
             isinstance(w, float)
+            or isinstance(w, int)
             or w is None
             or (w.ndim == 1 and batch_size == w.shape[0])
-        ), "w must be a 1D tensor of shape (batch_size,) if not None and not a single float."
+        ), "w must be a 1D tensor of shape (batch_size,) if not None and not a single int/float."
 
         if isinstance(generator, list) and len(generator) != batch_size:
             raise ValueError(
@@ -146,6 +148,7 @@ class ConditionalDDIMPipeline(DiffusionPipeline):
         output_type: Optional[str] = "pil",
         return_dict: bool = True,
         start_image: Optional[torch.Tensor] = None,
+        add_forward_noise_to_image: bool = True,
         frac_diffusion_skipped: Optional[float] = None,
         guidance_eqn: Literal["imagen", "CFG"] = "imagen",
     ) -> Union[ImagePipelineOutput, Tuple]:
@@ -156,7 +159,7 @@ class ConditionalDDIMPipeline(DiffusionPipeline):
             class_emb (`torch.Tensor` or None):
                 The class embeddings to condition on. Should be None if class_labels are passed or a tensor of shape `(batch_size, emb_dim)` otherwise.
             w (`int` or `float` or `torch.Tensor` or None):
-                The guidance factor. Should be None, or a int/float or a tensor of shape `(batch_size,)` of postive value(s).
+                The guidance factor. Should be None (then falls back to default), or a int/float or a tensor of shape `(batch_size,)` of postive value(s).
             generator (`torch.Generator`, *optional*):
                 One or a list of [torch generator(s)](https://pytorch.org/docs/stable/generated/torch.Generator.html)
                 to make generation deterministic.
@@ -176,6 +179,9 @@ class ConditionalDDIMPipeline(DiffusionPipeline):
             start_image (`torch.Tensor`, *optional*, defaults to `None`):
                 A starting image to use for the diffusion process. If `None`, a random image is generated.
                 `frac_diffusion_skipped` must be passed if `start_image` is not `None`.
+            add_forward_noise_to_image (`bool`, *optional*, defaults to `True`)
+                Whether to add noise to the input image or not. If `True`, the noising is done in accordance with
+                `frac_diffusion_skipped` (so `1 - frac_diffusion_skipped` of the forward diffusion process is performed).
             frac_diffusion_skipped (`float`, *optional*, defaults to `None`):
                 The fraction of the diffusion process to skip. Must be passed if `start_image` is not `None`.
                 Should be between 0 and 1. 0 therefore means full diffusion trajectory.
@@ -210,7 +216,7 @@ class ConditionalDDIMPipeline(DiffusionPipeline):
         # Device
         device = self._execution_device
 
-        # Sample gaussian noise to begin loop
+        # Sample Gaussian noise to begin loop
         if isinstance(self.unet.config.sample_size, int):
             image_shape = (
                 batch_size,
@@ -225,6 +231,7 @@ class ConditionalDDIMPipeline(DiffusionPipeline):
                 *self.unet.config.sample_size,
             )
 
+        # Starting point
         if start_image is not None:
             image = start_image
         else:
@@ -250,6 +257,25 @@ class ConditionalDDIMPipeline(DiffusionPipeline):
         else:
             timesteps = self.scheduler.timesteps
 
+        # Noise images
+        if add_forward_noise_to_image:
+            noise = randn_tensor(
+                image.shape, generator=generator, device=device, dtype=image.dtype
+            )
+            image = self.scheduler.add_noise(
+                image, noise, timesteps[0].repeat(batch_size)
+            )
+
+        # CLF
+        if w is None:
+            w = DEFAULT_GUIDANCE_SCALE
+
+        do_classifier_free_guidance = (
+            isinstance(w, torch.Tensor)
+            or (guidance_eqn == "imagen" and w > 1)
+            or (guidance_eqn == "CFG" and w > 0)
+        )
+
         for t in self.progress_bar(timesteps):
             # TODO: do the cond & uncond passes at once like for SD!
             # 1. predict noise model_output
@@ -261,7 +287,7 @@ class ConditionalDDIMPipeline(DiffusionPipeline):
             ).sample
 
             # 2. Form the classifier-free guided score
-            if w is not None:
+            if do_classifier_free_guidance:
                 # unconditionally predict noise model_output
                 uncond_output = self.unet(
                     sample=image,
