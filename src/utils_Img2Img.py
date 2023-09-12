@@ -21,7 +21,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch_fidelity
-import wandb
 from accelerate import Accelerator
 from accelerate.logging import MultiProcessAdapter
 from datasets import load_dataset
@@ -34,6 +33,7 @@ from torch.utils.data import Dataset
 from torchvision import transforms
 from tqdm.auto import tqdm
 
+import wandb
 from src.custom_pipeline_stable_diffusion_img2img import (
     CustomStableDiffusionImg2ImgPipeline,
 )
@@ -529,16 +529,17 @@ def _ddib(
     if isinstance(pipe, ConditionalDDIMPipeline):
         images_to_save = pipe(
             class_labels=target_class_labels,
-            w=None,
+            w=0,
             num_inference_steps=num_inference_steps,
             start_image=inverted_gauss,
+            add_forward_noise_to_image=False,
             frac_diffusion_skipped=0,
         ).images  # type: ignore
     elif isinstance(pipe, CustomStableDiffusionImg2ImgPipeline):
         images_to_save = pipe(
-            image=clean_images,
+            image=inverted_gauss,
             class_labels=target_class_labels,
-            strength=0,
+            strength=1,
             add_forward_noise_to_image=False,
             num_inference_steps=num_inference_steps,
             guidance_scale=0,  # guidance_scale <= 1.0 disables guidance
