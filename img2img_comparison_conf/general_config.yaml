@@ -13,7 +13,7 @@ defaults:
 exp_parent_folder: ${oc.env:SCRATCH}/comparison-experiments/experiments
 
 project: class_transfer
-run_name: test_run
+run_name: sensible_hyperparams
 
 hydra:
   run:
