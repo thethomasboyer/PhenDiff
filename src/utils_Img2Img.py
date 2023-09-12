@@ -41,6 +41,7 @@ from src.pipeline_conditional_ddim import ConditionalDDIMPipeline
 
 DEBUG_BATCHES_LIMIT = 0
 MAX_NB_LOGGED_IMAGES = 50
+DEFAULT_KID_SUBSET_SIZE = 1000
 
 
 class ClassTransferExperimentParams:
@@ -426,6 +427,13 @@ def compute_metrics(
             else:
                 compute_kid = True
 
+            # enough to compute KID but still lower than default;
+            # set min_kid_subset_size to DEFAULT_KID_SUBSET_SIZE to skip this logic
+            if compute_kid and nb_samples < DEFAULT_KID_SUBSET_SIZE:
+                kid_subset_size = nb_samples
+            else:
+                kid_subset_size = DEFAULT_KID_SUBSET_SIZE
+
             # 1. Unconditional
             args.logger.info("Computing metrics (unconditional case)")
             # get the images to compare
@@ -445,7 +453,7 @@ def compute_metrics(
                 verbose=False,
                 cache_root=args.fidelity_cache_root,
                 # input1_cache_name=f"{class_name}",  # TODO: force caching
-                kid_subset_size=args.cfg.kid_subset_size,
+                kid_subset_size=kid_subset_size,
                 samples_find_deep=True,
             )
             # log metrics
@@ -485,7 +493,7 @@ def compute_metrics(
                     verbose=False,
                     cache_root=args.fidelity_cache_root,
                     # input1_cache_name=f"{class_name}",  # TODO: force caching
-                    kid_subset_size=args.cfg.kid_subset_size,
+                    kid_subset_size=kid_subset_size,
                     samples_find_deep=False,
                 )
                 # log metrics
