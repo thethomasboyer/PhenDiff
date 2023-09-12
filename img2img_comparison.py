@@ -22,13 +22,6 @@
 # with metrics computed at the end of each experiment with torch-fidelity.
 
 
-# TODO's:
-# +++ merge with img2img_comparison_SLURM.py
-# ++ sweep
-# ++ add all (start type)/(transfer method) variants
-# + check if fp16 is used + other inference time optimizations
-# + save inverted Gaussians once per noise scheduler config?
-
 from pathlib import Path
 
 import hydra
