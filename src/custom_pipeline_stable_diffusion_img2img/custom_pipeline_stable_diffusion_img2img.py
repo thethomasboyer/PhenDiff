@@ -38,7 +38,8 @@ from src.custom_embedding import CustomEmbedding
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
-DEFAULT_GUIDANCE_SCALE = 7.5
+DEFAULT_NUM_INFERENCE_STEPS = 50
+DEFAULT_GUIDANCE_SCALE = 4.5
 
 
 class CustomStableDiffusionImg2ImgPipeline(DiffusionPipeline):
@@ -459,7 +460,7 @@ class CustomStableDiffusionImg2ImgPipeline(DiffusionPipeline):
         class_labels: Optional[Union[int, List[int], torch.Tensor]] = None,
         strength: float = 0.8,
         add_forward_noise_to_image: bool = True,
-        num_inference_steps: Optional[int] = 50,
+        num_inference_steps: Optional[int] = DEFAULT_NUM_INFERENCE_STEPS,
         guidance_scale: Optional[Union[float, torch.Tensor]] = DEFAULT_GUIDANCE_SCALE,
         eta: Optional[float] = 0.0,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
@@ -519,9 +520,9 @@ class CustomStableDiffusionImg2ImgPipeline(DiffusionPipeline):
                 The number of denoising steps. More denoising steps usually lead to a higher quality image at the
                 expense of slower inference. This parameter will be modulated by `strength`.
 
-            - guidance_scale (`float` or `Tensor`, *optional*, defaults to 7.5)
+            - guidance_scale (`float` or `Tensor`, *optional*, defaults to DEFAULT_GUIDANCE_SCALE)
 
-                Guidance scale as defined in [Classifier-Free Diffusion Guidance](https://arxiv.org/abs/2207.12598).
+                Guidance scale as introduced in [Classifier-Free Diffusion Guidance](https://arxiv.org/abs/2207.12598).
                 `guidance_scale` is defined as `w` of equation 2. of [Imagen
                 Paper](https://arxiv.org/pdf/2205.11487.pdf). Guidance scale is enabled by setting `guidance_scale >
                 1`. Higher guidance scale encourages to generate images that are closely linked to the class labels,
