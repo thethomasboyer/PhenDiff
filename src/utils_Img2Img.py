@@ -226,8 +226,8 @@ def load_datasets(cfg: DictConfig, dataset_name: str) -> Tuple[Dataset, Dataset]
     train_dataset.set_transform(transform_images)  # type: ignore
     test_dataset.set_transform(transform_images)  # type: ignore
     # mimic PyTorch ImageFolder
-    train_dataset.classes = train_dataset.features["label"].names
-    test_dataset.classes = test_dataset.features["label"].names
+    train_dataset.classes = train_dataset.features["label"].names  # type: ignore
+    test_dataset.classes = test_dataset.features["label"].names  # type: ignore
 
     return train_dataset, test_dataset
 
@@ -384,22 +384,39 @@ def perform_class_transfer_experiment(args: ClassTransferExperimentParams):
                         )
                         for i in range(len(clean_images_processed_for_logging))
                     ]
-                    args.accelerator.log(
-                        {
-                            f"{args.class_transfer_method}/{pipename}/{split}/original_samples": orig_samples_to_log
-                        }
-                    )
                     # transferred samples
                     transferred_samples_to_log = [
                         wandb.Image(
                             images_to_save[i],
-                            caption=f"{filenames[i]}_to_{dataset.classes[target_class_labels[i]]}",
+                            caption=f"{filenames[i]}_to_{dataset.classes[target_class_labels[i]]}",  # type: ignore
                         )
                         for i in range(len(clean_images_processed_for_logging))
                     ]
+                    data_to_log = [
+                        [
+                            orig_img_name,
+                            orig_img,
+                            transf_img,
+                            transf_img._caption,  # type: ignore
+                        ]
+                        for orig_img_name, orig_img, transf_img in zip(
+                            filenames[:MAX_NB_LOGGED_IMAGES],
+                            orig_samples_to_log,
+                            transferred_samples_to_log,
+                        )
+                    ]
+                    table = wandb.Table(
+                        [
+                            "Original file name",
+                            "Original sample",
+                            "Transferred sample",
+                            "Transferred file name",
+                        ],
+                        data_to_log,
+                    )
                     args.accelerator.log(
                         {
-                            f"{args.class_transfer_method}/{pipename}/{split}/transferred_samples": transferred_samples_to_log
+                            f"{args.class_transfer_method}/{pipename}/{split}/samples": table
                         }
                     )
 
@@ -424,8 +441,10 @@ def compute_metrics(
             nb_samples = len(dataset)
             if nb_samples < args.cfg.min_kid_subset_size:
                 compute_kid = False
-            else:
+            elif args.cfg.compute_kid:
                 compute_kid = True
+            else:
+                compute_kid = False
 
             # enough to compute KID but still lower than default;
             # set min_kid_subset_size to DEFAULT_KID_SUBSET_SIZE to skip this logic
@@ -456,22 +475,20 @@ def compute_metrics(
                 kid_subset_size=kid_subset_size,
                 samples_find_deep=True,
             )
-            # log metrics
+            # prepare to log metrics
             args.logger.info(
                 f"Unconditional metrics for {args.class_transfer_method} with {pipename} on {split} split: {metrics_dict}"
             )
-            args.accelerator.log(
-                {
-                    f"{args.class_transfer_method}/{pipename}/{split}/uncond": metrics_dict,
-                }
-            )
+            table = wandb.Table(columns=["Metric", "Value"])
+            for metric_name, metric_value in metrics_dict.items():
+                table.add_data("uncond " + metric_name, metric_value)
 
             # 2. Conditional
             args.logger.info("Computing metrics (conditional case)")
             # get the classes
-            classes = args.train_dataset.classes
+            classes = args.train_dataset.classes  # type: ignore
             assert (
-                classes == args.test_dataset.classes
+                classes == args.test_dataset.classes  # type: ignore
             ), "Expecting the same classes between train and test datasets"
             # compute metrics per-class
             for class_name in classes:
@@ -500,11 +517,11 @@ def compute_metrics(
                 args.logger.info(
                     f"Conditional metrics for {args.class_transfer_method} with {pipename} on {split} split & target class {class_name}: {metrics_dict}"
                 )
-                args.accelerator.log(
-                    {
-                        f"{args.class_transfer_method}/{pipename}/{split}/{class_name}": metrics_dict,
-                    }
-                )
+                for metric_name, metric_value in metrics_dict.items():
+                    table.add_data(class_name + " " + metric_name, metric_value)
+            args.accelerator.log(
+                {f"{args.class_transfer_method}/{pipename}/{split}/metrics": table}
+            )
 
 
 @torch.no_grad()
@@ -793,7 +810,7 @@ def modify_debug_args(cfg: DictConfig, logger: MultiProcessAdapter) -> Optional[
         logger.warning(
             f"Debug mode: setting num_inference_steps to {num_inference_steps} and kid_subset_size to {DEBUG_BATCHES_LIMIT}"
         )
-        cfg.kid_subset_size = DEBUG_BATCHES_LIMIT
+        cfg.min_kid_subset_size = DEBUG_BATCHES_LIMIT
     else:  # else let each pipeline have its own param
         num_inference_steps = None
 
