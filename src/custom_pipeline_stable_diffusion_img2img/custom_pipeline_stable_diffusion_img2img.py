@@ -523,10 +523,9 @@ class CustomStableDiffusionImg2ImgPipeline(DiffusionPipeline):
             - guidance_scale (`float` or `Tensor`, *optional*, defaults to DEFAULT_GUIDANCE_SCALE)
 
                 Guidance scale as introduced in [Classifier-Free Diffusion Guidance](https://arxiv.org/abs/2207.12598).
-                `guidance_scale` is defined as `w` of equation 2. of [Imagen
-                Paper](https://arxiv.org/pdf/2205.11487.pdf). Guidance scale is enabled by setting `guidance_scale >
-                1`. Higher guidance scale encourages to generate images that are closely linked to the class labels,
-                usually at the expense of lower image quality.
+                `guidance_scale` is defined as `w` of equation 2. of [Imagen Paper](https://arxiv.org/pdf/2205.11487.pdf).
+                Guidance scale is enabled by setting `guidance_scale > 1`. Higher guidance scale encourages to generate images
+                that are closely linked to the class labels, usually at the expense of lower image quality.
 
             - eta (`float`, *optional*, defaults to 0.0)
 

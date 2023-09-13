@@ -83,14 +83,16 @@ def args_checker(
         raise ValueError(msg)
 
     if (
-        isinstance(args.guidance_factor, float)
-        and args.guidance_factor <= 1
-        and args.model_type == "StableDiffusion"
-        and first_check_pass
-    ):
-        logger.warning(
-            "The guidance factor is <= 1: classifier free guidance will not be performed"
-        )
+        isinstance(args.guidance_factor, float) or isinstance(args.guidance_factor, int)
+    ) and first_check_pass:
+        if args.guidance_factor <= 1:
+            logger.warning(
+                "The guidance factor is <= 1: classifier free guidance will not be performed if the guidance equation is Imagen's"
+            )
+        elif args.guidance_factor <= 0:
+            logger.warning(
+                "The guidance factor is <= 0: classifier free guidance will not be performed if the guidance equation is the one from the original CFG paper"
+            )
 
     if args.proba_uncond == 1 and first_check_pass:
         logger.warning(
