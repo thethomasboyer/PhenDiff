@@ -15,6 +15,7 @@
 
 import math
 import os
+import time
 from argparse import Namespace
 from math import ceil
 from pathlib import Path
@@ -47,6 +48,7 @@ from .utils_misc import (
     extract_into_tensor,
     is_it_best_model,
     print_info_at_run_start,
+    reinit_signal_handler,
     save_checkpoint,
     split,
 )
@@ -357,6 +359,17 @@ def perform_training_epoch(
                 full_pipeline_save_folder,
                 repo,
             )
+
+        # save checkpoint if sigterm received from SLURM manager
+        stop_training = reinit_signal_handler(
+            chckpt_save_path, global_step, accelerator, logger, args
+        )
+        if stop_training:
+            logger.warning(
+                f"Sleeping for up to {args.SLURM_signal_time} seconds before crashing."
+            )
+            time.sleep(args.SLURM_signal_time)  # sleep for SLURM_signal_time minutes
+            raise Exception("Process crashed intentionally.")
 
     progress_bar.close()
 

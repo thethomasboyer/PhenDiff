@@ -184,6 +184,12 @@ def parse_args() -> Namespace:
         help="Number of optimizer steps to train for. Must be provided if --num_epochs is not.",
     )
     parser.add_argument(
+        "--SLURM_signal_time",
+        type=int,
+        default=300,
+        help="The time (in seconds) to sleep when receiving a SLURM signal, waiting for SLURM to kill the process.",
+    )
+    parser.add_argument(
         "--eval_save_model_every_epochs",
         type=int,
         help="Evaluate and save (if --main_metric is the best recorded to date) the model during training every x epochs. Either this or --eval_save_model_every_opti_steps must be provided.",

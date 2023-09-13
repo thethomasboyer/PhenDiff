@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
 from argparse import Namespace
 from math import inf, sqrt
 from pathlib import Path
@@ -32,6 +33,7 @@ from src.utils_misc import (
     get_HF_component_names,
     get_initial_best_metric,
     modify_args_for_debug,
+    reinit_signal_handler,
     setup_logger,
 )
 from src.utils_models import load_initial_pipeline
@@ -75,18 +77,35 @@ def main(args: Namespace):
 
     # ------------------------------------- WandB ------------------------------------
     logger.info(f"Logging to project {args.experiment_name} & run name {args.run_name}")
+    run_id = None
+    if (
+        Path(accelerator_project_config.project_dir, "run_id.txt").exists()
+        and args.resume_from_checkpoint is not None
+    ):
+        with open("run_id.txt", "r") as f:
+            run_id = f.readline().strip()
+        logger.info(
+            f"Found a 'run_id.txt' file; trying to resume the W&B run with id {run_id}"
+        )
+
+    # Init W&B
+    init_kwargs = {
+        "wandb": {
+            "dir": args.exp_output_dirs_parent_folder,
+            "name": args.run_name,
+            "save_code": True,
+        }
+    }
+    if run_id is not None:
+        init_kwargs["wandb"]["run_id"] = run_id
+        init_kwargs["wandb"]["resume"] = "must"
+
     accelerator.init_trackers(
         project_name=args.experiment_name,
         config=vars(args),
         # save metadata to the "wandb" directory
         # inside the *parent* folder common to all *experiments*
-        init_kwargs={
-            "wandb": {
-                "dir": args.exp_output_dirs_parent_folder,
-                "name": args.run_name,
-                "save_code": True,
-            }
-        },
+        init_kwargs=init_kwargs,
     )
 
     # Make one log on every process with the configuration for debugging.
@@ -293,6 +312,10 @@ def main(args: Namespace):
             chckpt_save_path,
         )
     epoch = first_epoch
+
+    reinit_signal_handler(
+        chckpt_save_path, global_step, accelerator, logger, args, True
+    )
 
     # ----------------------------- Initial best metrics -----------------------------
     if accelerator.is_main_process:

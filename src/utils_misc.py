@@ -14,7 +14,11 @@
 
 import logging
 import os
+import signal
+import socket
+import sys
 from argparse import Namespace
+from functools import partial
 from pathlib import Path
 from shutil import rmtree
 from typing import Optional
@@ -548,3 +552,58 @@ def print_info_at_run_start(
         "Num generated images",
         args.nb_generated_images,
     )
+
+
+def reinit_signal_handler(
+    chckpt_save_path: Path,
+    global_step: int,
+    accelerator: Accelerator,
+    logger: MultiProcessAdapter,
+    args: Namespace,
+    first_init: bool = False,
+):
+    """
+    Handle signals sent by SLURM for time limit.
+    """
+    global sig_handler
+    sig_handler = partial(
+        sig_handler,
+        chckpt_save_path=chckpt_save_path,
+        global_step=global_step,
+        accelerator=accelerator,
+        logger=logger,
+        args=args,
+    )
+    signal.signal(signal.SIGUSR1, sig_handler)
+    if first_init:
+        logger.warning("SLURM signal handler installed.")
+
+
+def sig_handler(
+    signum,
+    _,
+    chckpt_save_path: Path,
+    global_step: int,
+    accelerator: Accelerator,
+    logger: MultiProcessAdapter,
+    args: Namespace,
+):
+    logger.warning("Signal handler called with signal " + str(signum))
+    # save checkpoint now
+    logger.info("Saving checkpoint after SLURM signal...")
+    save_checkpoint(
+        chckpt_save_path=chckpt_save_path,
+        global_step=global_step,
+        accelerator=accelerator,
+        logger=logger,
+        args=args,
+    )
+    # requeue job
+    prod_id = int(os.environ["SLURM_PROCID"])
+    logger.warning(f"Host: {socket.gethostname()} - Global rank: {prod_id}")
+    if prod_id == 0:
+        logger.warning("Requeuing job " + os.environ["SLURM_JOB_ID"])
+        os.system("scontrol requeue " + os.environ["SLURM_JOB_ID"])
+    else:
+        logger.warning("Not the master process, no need to requeue.")
+    sys.exit(-1)

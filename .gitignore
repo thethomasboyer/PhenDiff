@@ -1,11 +1,11 @@
 .vscode
 experiments
-wandb/
-.fidelity_cache/
+wandb
+.fidelity_cache
 *.pyc
-data/
+data
 accelerate_configs
-.ipynb_checkpoints/
+.ipynb_checkpoints
 .initial_pipeline_save
 outputs
 local_launch_script.sh
