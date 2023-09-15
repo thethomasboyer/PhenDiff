@@ -38,11 +38,7 @@ class Task:
             accelerate_cfg += " --multi_gpu"
 
         # Launched command
-        final_cmd = (
-            "WANDB_MODE=offline HF_DATASETS_OFFLINE=1 accelerate launch "
-            + accelerate_cfg
-            + " img2img_comparison.py"
-        )
+        final_cmd = f"WANDB_MODE=offline HF_DATASETS_OFFLINE=1 accelerate launch {accelerate_cfg} {self.cfg.path_to_script_parent_folder}/img2img_comparison.py"
 
         for override in self.overrides:
             final_cmd += f" {override}"
@@ -57,7 +53,7 @@ class Task:
 
 @hydra.main(
     version_base=None,
-    config_path="img2img_comparison_conf",
+    config_path="my_img2img_comparison_conf",
     config_name="general_config",
 )
 def main(cfg: DictConfig) -> None:

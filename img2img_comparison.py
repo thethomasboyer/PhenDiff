@@ -45,7 +45,7 @@ logger = get_logger(__name__, log_level="INFO")
 
 @hydra.main(
     version_base=None,
-    config_path="img2img_comparison_conf",
+    config_path="my_img2img_comparison_conf",
     config_name="general_config",
 )
 def main(cfg: DictConfig) -> None:

@@ -21,6 +21,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch_fidelity
+import wandb
 from accelerate import Accelerator
 from accelerate.logging import MultiProcessAdapter
 from datasets import load_dataset
@@ -33,7 +34,6 @@ from torch.utils.data import Dataset
 from torchvision import transforms
 from tqdm.auto import tqdm
 
-import wandb
 from src.custom_pipeline_stable_diffusion_img2img import (
     CustomStableDiffusionImg2ImgPipeline,
 )
@@ -522,6 +522,16 @@ def compute_metrics(
             args.accelerator.log(
                 {f"{args.class_transfer_method}/{pipename}/{split}/metrics": table}
             )
+
+            if args.cfg.sweep_metric is not None:
+                [mthd, p, s, sweep_metric] = args.cfg.sweep_metric.split("/")
+                if args.class_transfer_method == mthd and pipename == p and split == s:
+                    args.logger.info(
+                        f"Logging sweep metric with name '{args.cfg.sweep_metric}' and value {metrics_dict[sweep_metric]}"
+                    )
+                    args.accelerator.log(
+                        {f"{args.cfg.sweep_metric}": metrics_dict[sweep_metric]}
+                    )
 
 
 @torch.no_grad()
