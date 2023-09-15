@@ -462,8 +462,8 @@ def compute_metrics(
             )
             # compute metrics
             metrics_dict = torch_fidelity.calculate_metrics(
-                input1=true_images,
-                input2=generated_images,
+                input1=generated_images,
+                input2=true_images,
                 cuda=True,
                 batch_size=bs * 4,
                 isc=args.cfg.compute_isc,
@@ -500,8 +500,8 @@ def compute_metrics(
                 )  #                                                      ^^^^^^^^^^ this is the target class
                 # compute metrics
                 metrics_dict = torch_fidelity.calculate_metrics(
-                    input1=true_images,
-                    input2=generated_images,
+                    input1=generated_images,
+                    input2=true_images,
                     cuda=True,
                     batch_size=bs * 4,
                     isc=args.cfg.compute_isc,

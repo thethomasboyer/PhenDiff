@@ -1,3 +1,0 @@
-classifier_free_guidance_forward_start:
-  guidance_scale: 2.5
-  frac_diffusion_skipped: 0.5

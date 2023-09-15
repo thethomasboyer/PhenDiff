@@ -947,8 +947,8 @@ def _compute_log_metrics(
 
     # perform metrics computation
     metrics_dict = torch_fidelity.calculate_metrics(
-        input1=real_images_this_class,
-        input2=image_generation_tmp_save_folder.as_posix(),
+        input1=image_generation_tmp_save_folder.as_posix(),
+        input2=real_images_this_class,
         cuda=True,
         batch_size=args.eval_batch_size,
         isc=args.compute_isc,
