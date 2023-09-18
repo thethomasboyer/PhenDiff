@@ -31,21 +31,21 @@ from accelerate.logging import get_logger
 from hydra.utils import call
 from omegaconf import DictConfig, OmegaConf
 
-from src.utils_Img2Img import (
+from utils_Img2Img import (
     ClassTransferExperimentParams,
     compute_metrics,
     load_datasets,
     modify_debug_args,
     perform_class_transfer_experiment,
 )
-from src.utils_misc import setup_logger
+from utils_misc import setup_logger
 
 logger = get_logger(__name__, log_level="INFO")
 
 
 @hydra.main(
     version_base=None,
-    config_path="my_img2img_comparison_conf",
+    config_path="../my_img2img_comparison_conf",
     config_name="general_config",
 )
 def main(cfg: DictConfig) -> None:

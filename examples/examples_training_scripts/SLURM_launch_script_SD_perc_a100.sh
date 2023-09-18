@@ -6,7 +6,7 @@
 echo -e "\n<--------------------------------------- launch_script_SD_perc_a100.sh --------------------------------------->\n"
 
 # ------------------------------------------> Variables <------------------------------------------
-exp_name=SD_perc_compare # experiment name; common to all runs in the same experiment
+exp_name=experiment_name # experiment name; common to all runs in the same experiment
 
 exp_dirs_parent_folder=${SCRATCH}/comparison-experiments/experiments
 model_configs_folder=${HOME}/sources/diffusion-comparison-experiments/models_configs
@@ -54,7 +54,7 @@ source ${HOME}/.bashrc
 micromamba deactivate
 micromamba activate -p ${SCRATCH}/micromamba/envs/diffusion-experiments
 
-# ----------------------------------------> Launch script <----------------------------------------
+# ----------------------------------------> Launch scripts <----------------------------------------
 percentages=(100 50 10 5 3 1)
 
 for perc in ${percentages[@]}; do
@@ -94,7 +94,7 @@ for perc in ${percentages[@]}; do
     # Note that qos_gpu-t4 is not available with A100 partitions!
 
     # ----------------------------------------> Script + args <----------------------------------------
-    MAIN_SCRIPT=${HOME}/sources/diffusion-comparison-experiments/main.py
+    MAIN_SCRIPT=${HOME}/sources/diffusion-comparison-experiments/train.py
 
     MAIN_SCRIPT_ARGS="
     $1

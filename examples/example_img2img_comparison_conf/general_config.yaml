@@ -1,34 +1,57 @@
+############################################# DEFAULTS ############################################
 defaults:
-  - class_transfer_method:
-      - linear_interp_custom_guidance_inverted_start
-      - classifier_free_guidance_forward_start
-      - ddib
-  - dataset: path/to/dataset
-  - pipeline:
-      - DDIM
-      - SD
-  - _self_
-  - batch_sizes: a100-80gb
+- class_transfer_method:
+  - linear_interp_custom_guidance_inverted_start
+  - classifier_free_guidance_forward_start
+  - ddib
+- dataset: path/to/dataset
+- pipeline:
+  - DDIM
+  - SD
+- batch_sizes: v100-32gb
+- _self_
 
-exp_parent_folder: path/to/experiments/parent_folder
-
+####################################### EXPERIMENT VARIABLES ######################################
+exp_parent_folder: ./experiments
+path_to_script_parent_folder: <path/to/repo>/src
 project: project_name
 run_name: run_name
 
+############################################## HYDRA ##############################################
 hydra:
   run:
-    dir: ${exp_parent_folder}/${project}/${run_name} # TODO: will replace/append to files (and then probably error) if relaunched!
+    dir: ${exp_parent_folder}/${project}/${run_name}/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
-output_folder: ${hydra:run.dir}
+############################################## SLURM ##############################################
+slurm:
+  enabled: false
+  monitor: false
+  signal_time: 300
+  email: email@company.com
+  output_folder: ${hydra:run.dir}
 
-debug: false
-monitor: false
-slurm: true
+############################################## SWEEP ##############################################
+sweep_metric: null # TODO: retrieve from sweep cfg
 
-mixed_precision: fp16
-num_GPUs: 4
+############################################ ACCELERATE ###########################################
+accelerate:
+  launch_args:
+    machine_rank: 0
+    num_machines: 1
+    gpu_ids: 0,1
+    rdzv_backend: static
+    same_network: true
+    mixed_precision: fp16
+    num_processes: 2
+    dynamo_backend: "no"
+    multi_gpu: true
+  offline: false
 
+############################################# METRICS #############################################
 compute_fid: true
 compute_isc: true
 compute_kid: true
 min_kid_subset_size: 1000 # 1000 is the default in torch-fidelity
+
+########################################## MISCELLANEOUS ##########################################
+debug: false
