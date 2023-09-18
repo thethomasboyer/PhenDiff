@@ -3,10 +3,10 @@
 # TODO: adapt to multi-node setting:
 #   - requires a dynamic ACCELERATE_CONFIG, notably machine_rank
 
-echo -e "\n<--------------------------------------- launch_script_DDIM_perc_a100.sh --------------------------------------->\n"
+echo -e "\n<--------------------------------------- launch_script_SD_perc_a100.sh --------------------------------------->\n"
 
 # ------------------------------------------> Variables <------------------------------------------
-exp_name=DDIM_perc_compare # experiment name; common to all runs in the same experiment
+exp_name=SD_perc_compare # experiment name; common to all runs in the same experiment
 
 exp_dirs_parent_folder=${SCRATCH}/comparison-experiments/experiments
 model_configs_folder=${HOME}/sources/diffusion-comparison-experiments/models_configs
@@ -82,7 +82,7 @@ for perc in ${percentages[@]}; do
     --time=${runtime}
     --qos=${qos}
     --account=kio@a100
-    --mail-user=tboyer@bio.ens.psl.eu
+    --mail-user=yourmail@mailcompany.com
     --mail-type=FAIL
     ${outputs}
     "
@@ -101,22 +101,22 @@ for perc in ${percentages[@]}; do
     --exp_output_dirs_parent_folder ${exp_dirs_parent_folder}
     --experiment_name ${exp_name}
     --run_name ${run_name}
-    --model_type DDIM
-    --denoiser_config_path ${model_configs_folder}/denoiser/small_denoiser_config.json
-    --noise_scheduler_config_path ${model_configs_folder}/noise_scheduler/3k_steps_clipping_rescaling.json
+    --model_type StableDiffusion
+    --pretrained_model_name_or_path stabilityai/stable-diffusion-2-1
+    --components_to_train denoiser class_embedding
+    --noise_scheduler_config_path ${model_configs_folder}/noise_scheduler/better_SD_config_test.json
     --num_inference_steps 100
-    --components_to_train denoiser
-    --train_data_dir ${SCRATCH}/datasets/BBBC021_comp_conc_nice_phen_high_conc_balanced_no_aug
+    --train_data_dir path/to/train/data
     --perc_samples ${perc}
     --seed 1234
     --resolution 128
-    --train_batch_size 96
-    --eval_batch_size 256
+    --train_batch_size 128
+    --eval_batch_size 768
     --max_num_steps 30000
     --learning_rate 1e-4
     --mixed_precision fp16
     --eval_save_model_every_opti_steps 1000
-    --nb_generated_images 4096
+    --nb_generated_images 6144
     --checkpoints_total_limit 3
     --checkpointing_steps 1000
     --use_ema
@@ -125,7 +125,6 @@ for perc in ${percentages[@]}; do
     --compute_isc
     --compute_kid
     "
-
     # ----------------------------------------> Echo commands <----------------------------------------
     echo -e "MAIN_SCRIPT: ${MAIN_SCRIPT}\n"
     echo -e "MAIN_SCRIPT_ARGS: ${MAIN_SCRIPT_ARGS}\n"

@@ -16,3 +16,4 @@ pipeline_downloader.ipynb
 src/torch-fidelity
 my_img2img_comparison_conf
 wandb_sweep.yaml
+src/__pycache__/

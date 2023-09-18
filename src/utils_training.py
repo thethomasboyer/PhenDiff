@@ -28,7 +28,7 @@ from accelerate.logging import MultiProcessAdapter
 from diffusers import DDIMScheduler, UNet2DConditionModel
 from diffusers.training_utils import EMAModel
 from PIL.Image import Image
-from torch.utils.data import Subset, DataLoader
+from torch.utils.data import DataLoader, Subset
 from torchvision.datasets import ImageFolder
 from tqdm.auto import tqdm
 
@@ -44,6 +44,7 @@ from .utils_misc import (
     extract_into_tensor,
     is_it_best_model,
     print_info_at_run_start,
+    save_checkpoint,
     split,
 )
 
@@ -529,24 +530,13 @@ def _syn_training_state(
 
     if global_step % args.checkpointing_steps == 0:
         # time to save a checkpoint!
-        this_checkpoint_folder = Path(chckpt_save_path, f"step_{global_step}")
-        if accelerator.is_main_process:
-            accelerator.save_state(this_checkpoint_folder.as_posix())
-            logger.info(f"Checkpointed step {global_step} at {this_checkpoint_folder}")
-            # Delete old checkpoints if needed
-            checkpoints_list = os.listdir(chckpt_save_path)
-            nb_checkpoints = len(checkpoints_list)
-            if nb_checkpoints > args.checkpoints_total_limit:
-                to_del = sorted(checkpoints_list, key=lambda x: int(x.split("_")[1]))[
-                    : -args.checkpoints_total_limit
-                ]
-                if len(to_del) > 1:
-                    logger.warning(
-                        f"\033[1;33mMORE THAN 1 CHECKPOINT TO DELETE:\033[0m\n {to_del}"
-                    )
-                for dir in to_del:
-                    logger.info(f"Deleting checkpoint {dir}...")
-                    rmtree(Path(chckpt_save_path, dir))
+        save_checkpoint(
+            chckpt_save_path=chckpt_save_path,
+            global_step=global_step,
+            accelerator=accelerator,
+            logger=logger,
+            args=args,
+        )
 
     return global_step
 

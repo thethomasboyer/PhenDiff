@@ -46,7 +46,7 @@ $1
 --components_to_train denoiser class_embedding
 --noise_scheduler_config_path ${model_configs_folder}/noise_scheduler/better_SD_config_test.json
 --num_inference_steps 25
---train_data_dir /projects/deepdevpath/Thomas/data/BBBC021_comp_conc_nice_phen_high_conc_balanced
+--train_data_dir path/to/train/data
 --resolution 128
 --train_batch_size 64
 --eval_batch_size 128

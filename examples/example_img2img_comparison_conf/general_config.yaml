@@ -1,0 +1,34 @@
+defaults:
+  - class_transfer_method:
+      - linear_interp_custom_guidance_inverted_start
+      - classifier_free_guidance_forward_start
+      - ddib
+  - dataset: path/to/dataset
+  - pipeline:
+      - DDIM
+      - SD
+  - _self_
+  - batch_sizes: a100-80gb
+
+exp_parent_folder: path/to/experiments/parent_folder
+
+project: project_name
+run_name: run_name
+
+hydra:
+  run:
+    dir: ${exp_parent_folder}/${project}/${run_name} # TODO: will replace/append to files (and then probably error) if relaunched!
+
+output_folder: ${hydra:run.dir}
+
+debug: false
+monitor: false
+slurm: true
+
+mixed_precision: fp16
+num_GPUs: 4
+
+compute_fid: true
+compute_isc: true
+compute_kid: true
+min_kid_subset_size: 1000 # 1000 is the default in torch-fidelity

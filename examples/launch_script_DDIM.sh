@@ -46,7 +46,7 @@ $1
 --noise_scheduler_config_path ${model_configs_folder}/noise_scheduler/3k_steps_clipping_rescaling.json
 --denoiser_config_path ${model_configs_folder}/denoiser/super_small.json
 --num_inference_steps 25
---train_data_dir /projects/deepdevpath/Thomas/data/BBBC021_comp_conc_nice_phen_high_conc_balanced_no_aug
+--train_data_dir path/to/train/data
 --perc_samples 10
 --resolution 128
 --train_batch_size 112

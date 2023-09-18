@@ -17,7 +17,6 @@ from math import inf, sqrt
 from pathlib import Path
 
 import torch
-import wandb
 from accelerate import Accelerator
 from accelerate.logging import MultiProcessAdapter, get_logger
 from accelerate.utils import (
@@ -28,6 +27,7 @@ from accelerate.utils import (
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import EMAModel
 
+import wandb
 from src.args_parser import parse_args
 from src.utils_dataset import setup_dataset
 from src.utils_misc import (

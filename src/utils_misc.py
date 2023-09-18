@@ -15,19 +15,18 @@
 import logging
 import os
 from argparse import Namespace
-from math import ceil
 from pathlib import Path
+from shutil import rmtree
 from typing import Optional
 
 import datasets
 import diffusers
 import numpy as np
 import torch
+from accelerate import Accelerator
 from accelerate.logging import MultiProcessAdapter
 from diffusers import DDIMScheduler
-from diffusers.utils.import_utils import is_xformers_available
 from huggingface_hub import HfFolder, whoami
-from packaging import version
 
 
 def extract_into_tensor(arr, timesteps, broadcast_shape):
@@ -311,6 +310,33 @@ def modify_args_for_debug(
         args.max_num_steps = 30
     args.checkpointing_steps = 10
     args.kid_subset_size = min(1000, args.nb_generated_images)
+
+
+def save_checkpoint(
+    chckpt_save_path: Path,
+    global_step: int,
+    accelerator: Accelerator,
+    logger: MultiProcessAdapter,
+    args: Namespace,
+):
+    this_checkpoint_folder = Path(chckpt_save_path, f"step_{global_step}")
+    if accelerator.is_main_process:
+        accelerator.save_state(this_checkpoint_folder.as_posix())
+        logger.info(f"Checkpointed step {global_step} at {this_checkpoint_folder}")
+        # Delete old checkpoints if needed
+        checkpoints_list = os.listdir(chckpt_save_path)
+        nb_checkpoints = len(checkpoints_list)
+        if nb_checkpoints > args.checkpoints_total_limit:
+            to_del = sorted(checkpoints_list, key=lambda x: int(x.split("_")[1]))[
+                : -args.checkpoints_total_limit
+            ]
+            if len(to_del) > 1:
+                logger.warning(
+                    f"\033[1;33mMORE THAN 1 CHECKPOINT TO DELETE:\033[0m\n {to_del}"
+                )
+            for dir in to_del:
+                logger.info(f"Deleting checkpoint {dir}...")
+                rmtree(Path(chckpt_save_path, dir))
 
 
 def is_it_best_model(

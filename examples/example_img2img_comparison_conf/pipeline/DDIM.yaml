@@ -1,0 +1,9 @@
+DDIM:
+  # instantiation args
+  _target_: src.pipeline_conditional_ddim.ConditionalDDIMPipeline.from_pretrained
+  pretrained_model_name_or_path: path/to/pretrained_model
+  local_files_only: true
+  # torch_dtype: fp16
+
+  # other args; these "are not expected [...] and will be ignored" at instantiation
+  num_inference_steps: 100
