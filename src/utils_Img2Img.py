@@ -423,7 +423,7 @@ def perform_class_transfer_experiment(args: ClassTransferExperimentParams):
                 # Stop if debug flag
                 if args.cfg.debug and step >= DEBUG_BATCHES_LIMIT:
                     args.logger.warn(
-                        f"debug flag: stopping after {DEBUG_BATCHES_LIMIT+1} batches"
+                        f"debug flag: stopping after {DEBUG_BATCHES_LIMIT+1} batche(s)"
                     )
                     break
 
@@ -526,12 +526,12 @@ def compute_metrics(
             if args.cfg.sweep_metric is not None:
                 [mthd, p, s, sweep_metric] = args.cfg.sweep_metric.split("/")
                 if args.class_transfer_method == mthd and pipename == p and split == s:
+                    metrics_df = table.get_dataframe().set_index("Metric")
+                    value = metrics_df.at[sweep_metric, "Value"]
                     args.logger.info(
-                        f"Logging sweep metric with name '{args.cfg.sweep_metric}' and value {metrics_dict[sweep_metric]}"
+                        f"Logging sweep metric with name '{args.cfg.sweep_metric}' and value {value}"
                     )
-                    args.accelerator.log(
-                        {f"{args.cfg.sweep_metric}": metrics_dict[sweep_metric]}
-                    )
+                    args.accelerator.log({f"{args.cfg.sweep_metric}": value})
 
 
 @torch.no_grad()

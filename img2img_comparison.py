@@ -51,7 +51,7 @@ logger = get_logger(__name__, log_level="INFO")
 def main(cfg: DictConfig) -> None:
     # ---------------------------------------- Accelerator ----------------------------------------
     accelerator = Accelerator(
-        mixed_precision=cfg.mixed_precision,
+        mixed_precision=cfg.accelerate.launch_args.mixed_precision,
         log_with="wandb",
     )
 
