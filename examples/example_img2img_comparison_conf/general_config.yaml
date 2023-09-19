@@ -13,7 +13,7 @@ defaults:
 
 ####################################### EXPERIMENT VARIABLES ######################################
 exp_parent_folder: ./experiments
-path_to_script_parent_folder: <path/to/repo>/src
+path_to_script_parent_folder: path/to/repo/folder
 project: project_name
 run_name: run_name
 
@@ -29,6 +29,7 @@ slurm:
   signal_time: 300
   email: email@company.com
   output_folder: ${hydra:run.dir}
+  num_gpus: null
 
 ############################################## SWEEP ##############################################
 sweep_metric: null # TODO: retrieve from sweep cfg

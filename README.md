@@ -64,7 +64,7 @@ They are meant to launch a series of runs at different sizes of training data on
 # 🎨 Image-to-image class transfer
 Image-to-image class transfer experiments are performed with the `img2img_comparison_launcher.py` script, which additionally handles the configuration of `accelerate` and possibly submits the jobs to the `SLURM` manager. It can be called as:
 ```sh
-python img2img_comparison_launcher.py {hydra overrides}
+python img2img_comparison_launcher.py {hydra overrides} &
 ```
 
 The image-to-image class transfer experiments are configures with [Hydra](https://hydra.cc/). Example configuration files can be found in the `examples/example_img2img_comparison_conf` folder. 
