@@ -1,0 +1,21 @@
+program: path/to/img2img_comparison_launcher.py
+method: random
+metric:
+  name: classifier_free_guidance_forward_start/DDIM/train/uncond frechet_inception_distance
+  goal: minimize
+parameters:
+  class_transfer_method.classifier_free_guidance_forward_start.guidance_scale:
+    distribution: uniform
+    min: 1
+    max: 8
+  class_transfer_method.classifier_free_guidance_forward_start.frac_diffusion_skipped:
+    distribution: uniform
+    min: 0.1
+    max: 0.9
+command:
+- ${env}
+- ${interpreter}
+- ${program}
+- ${args_no_hyphens}
+project: project_name
+entity: entity_name
