@@ -21,7 +21,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch_fidelity
-import wandb
 from accelerate import Accelerator
 from accelerate.logging import MultiProcessAdapter
 from datasets import load_dataset
@@ -34,10 +33,12 @@ from torch.utils.data import Dataset
 from torchvision import transforms
 from tqdm.auto import tqdm
 
-from src.custom_pipeline_stable_diffusion_img2img import (
+import wandb
+
+from .custom_pipeline_stable_diffusion_img2img import (
     CustomStableDiffusionImg2ImgPipeline,
 )
-from src.pipeline_conditional_ddim import ConditionalDDIMPipeline
+from .pipeline_conditional_ddim import ConditionalDDIMPipeline
 
 DEBUG_BATCHES_LIMIT = 0
 MAX_NB_LOGGED_IMAGES = 50
