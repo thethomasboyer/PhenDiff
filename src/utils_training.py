@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
 import math
 import os
 from argparse import Namespace
@@ -25,9 +26,11 @@ import torch.nn.functional as F
 import torch_fidelity
 from accelerate import Accelerator
 from accelerate.logging import MultiProcessAdapter
+from accelerate.utils import broadcast
 from diffusers import DDIMScheduler, UNet2DConditionModel
 from diffusers.training_utils import EMAModel
 from PIL.Image import Image
+from torch import FloatTensor, IntTensor
 from torch.utils.data import DataLoader, Subset
 from torchvision.datasets import ImageFolder
 from tqdm.auto import tqdm
@@ -163,7 +166,6 @@ def perform_training_epoch(
     optimizer,
     lr_scheduler,
     logger: MultiProcessAdapter,
-    do_uncond_pass_across_all_procs: torch.BoolTensor,
     params_to_clip: list,
     tot_training_steps: int,
     image_generation_tmp_save_folder: Path,
@@ -232,15 +234,15 @@ def perform_training_epoch(
 
         if args.model_type == "StableDiffusion":
             # Convert images to latent space
-            clean_images = autoencoder_model.encode(clean_images).latent_dist.sample()
-            clean_images = clean_images * autoencoder_model.config.scaling_factor
+            clean_images = autoencoder_model.encode(clean_images).latent_dist.sample()  # type: ignore
+            clean_images = clean_images * autoencoder_model.config.scaling_factor  # type: ignore
             # TODO: ↑ why?
 
         # Sample noise that we'll add to the images
-        noise = torch.randn(clean_images.shape).to(clean_images.device)
+        noise: FloatTensor = torch.randn(clean_images.shape).to(clean_images.device)  # type: ignore
 
         # Sample a random timestep for each image
-        timesteps = torch.randint(
+        timesteps: IntTensor = torch.randint(  # type: ignore
             0,
             noise_scheduler.config.num_train_timesteps,
             (clean_images.shape[0],),
@@ -252,7 +254,23 @@ def perform_training_epoch(
         noisy_images = noise_scheduler.add_noise(clean_images, noise, timesteps)
 
         # Unconditional pass for CLF guidance training
-        do_unconditional_pass: bool = do_uncond_pass_across_all_procs[step].item()
+        # synchronize the conditional & unconditional passes of CLF guidance training
+        # between all the processes to circumvent a nasty and unexplained bug...
+        # fill tensor on main proc
+        if accelerator.is_main_process:
+            # always true if proba_uncond == 1 as torch.rand -> [0;1[
+            do_uncond_pass_across_all_procs = (
+                torch.tensor(1, device=accelerator.device)
+                if torch.rand(1) < args.proba_uncond
+                else torch.tensor(0, device=accelerator.device)
+            )
+        else:
+            do_uncond_pass_across_all_procs = torch.tensor(0, device=accelerator.device)
+        accelerator.wait_for_everyone()
+        # broadcast tensor to all procs
+        do_uncond_pass_across_all_procs = broadcast(do_uncond_pass_across_all_procs)
+
+        do_unconditional_pass: bool = do_uncond_pass_across_all_procs.item()  # type: ignore
         accelerator.log(
             {
                 "unconditional step": int(do_unconditional_pass),
@@ -354,11 +372,11 @@ def _diffusion_and_backward(
     global_step: int,
     denoiser_model: UNet2DConditionModel | CustomCondUNet2DModel,
     noisy_images: torch.Tensor,
-    timesteps: torch.Tensor,
+    timesteps: IntTensor,
     class_labels: torch.Tensor,
-    noise: torch.Tensor,
+    noise: FloatTensor,
     noise_scheduler: DDIMScheduler,
-    clean_images: torch.Tensor,
+    clean_images: FloatTensor,
     optimizer,
     lr_scheduler,
     class_embedding: CustomEmbedding | None,
@@ -374,8 +392,8 @@ def _diffusion_and_backward(
                 do_unconditional_pass=do_unconditional_pass,
                 class_labels=class_labels,
                 args=args,
-                class_embedding=class_embedding,
-                denoiser_model=denoiser_model,
+                class_embedding=class_embedding,  # type: ignore
+                denoiser_model=denoiser_model,  # type: ignore
                 noisy_images=noisy_images,
                 timesteps=timesteps,
             )
@@ -384,7 +402,7 @@ def _diffusion_and_backward(
                 accelerator,
                 do_unconditional_pass,
                 class_labels,
-                denoiser_model,
+                denoiser_model,  # type: ignore
                 noisy_images,
                 timesteps,
             )
@@ -392,7 +410,7 @@ def _diffusion_and_backward(
             raise ValueError(f"Unsupported model type: {args.model_type}")
 
     # 2. Compute loss
-    match noise_scheduler.config.prediction_type:
+    match noise_scheduler.config.prediction_type:  # type: ignore
         case "epsilon":
             loss = F.mse_loss(model_output, noise)
         case "sample":
@@ -418,7 +436,7 @@ def _diffusion_and_backward(
     if accelerator.sync_gradients:
         gard_norm = accelerator.clip_grad_norm_(params_to_clip, 1.0)
         accelerator.log({"gradient norm": gard_norm}, step=global_step)
-        if gard_norm.isnan().any() and accelerator.is_main_process:
+        if gard_norm.isnan().any() and accelerator.is_main_process:  # type: ignore
             msg = f"Gradient norm is NaN at step {global_step}"
             wandb.alert(
                 title="NaN gradient norm",
@@ -492,7 +510,7 @@ def _DDIM_prediction_wrapper(
                 accelerator.unwrap_model(denoiser_model).time_embed_dim,
             )
         ).to(accelerator.device)
-        class_labels = None
+        class_labels = None  # type: ignore
     else:
         class_emb = None
 
@@ -586,7 +604,7 @@ def generate_samples_compute_metrics_save_pipe(
         # log best model indicator
         accelerator.log(
             {
-                "best_model_to_date": int(best_model_to_date),
+                "best_model_to_date": int(best_model_to_date),  # type: ignore
             },
             step=global_step,
         )
@@ -683,7 +701,7 @@ def _generate_samples_and_compute_metrics(
         if args.proba_uncond == 1:
             class_name = "unconditional"
         else:
-            class_name = dataset.classes[class_label]
+            class_name = dataset.classes[class_label]  # type: ignore
 
         # clean image_generation_tmp_save_folder (it's per-class)
         if accelerator.is_local_main_process:
@@ -708,7 +726,7 @@ def _generate_samples_and_compute_metrics(
                     actual_eval_batch_sizes_for_this_process=actual_eval_batch_sizes_for_this_process,
                     args=args,
                     generator=generator,
-                    pipeline=inference_pipeline,
+                    pipeline=inference_pipeline,  # type: ignore
                     epoch=epoch,
                     global_step=global_step,
                 )
@@ -722,7 +740,7 @@ def _generate_samples_and_compute_metrics(
                     actual_eval_batch_sizes_for_this_process=actual_eval_batch_sizes_for_this_process,
                     args=args,
                     generator=generator,
-                    pipeline=inference_pipeline,
+                    pipeline=inference_pipeline,  # type: ignore
                     epoch=epoch,
                     global_step=global_step,
                 )
@@ -814,7 +832,7 @@ def _generate_save_images_for_this_class_SD(
         # (and actualy limit to 50 images/latents maximum)
         if batch_idx == 0 and accelerator.is_main_process:
             # log images
-            images_processed = (images * 255).round().astype("uint8")
+            images_processed = (images * 255).round().astype("uint8")  # type: ignore
             accelerator.log(
                 {
                     f"generated_samples/{class_name}": [
@@ -878,7 +896,7 @@ def _generate_save_images_for_this_class_DDIM(
             generator=generator,
             num_inference_steps=args.num_inference_steps,
             output_type="numpy",
-        ).images
+        ).images  # type: ignore
 
         # save images to disk
         images_pil: list[Image] = pipeline.numpy_to_pil(images)
@@ -900,7 +918,7 @@ def _generate_save_images_for_this_class_DDIM(
         # (and actualy limit to 50 images/latents maximum)
         if batch_idx == 0 and accelerator.is_main_process:
             # log images
-            images_processed = (images * 255).round().astype("uint8")
+            images_processed = (images * 255).round().astype("uint8")  # type: ignore
             accelerator.log(
                 {
                     f"generated_samples/{class_name}": [
@@ -935,7 +953,7 @@ def _compute_log_metrics(
 
     # extract a subset of the raw dataset for this class only if applicable
     if args.proba_uncond != 1:
-        indices_this_class = np.nonzero(np.array(raw_dataset.targets) == class_label)[0]
+        indices_this_class = np.nonzero(np.array(raw_dataset.targets) == class_label)[0]  # type: ignore
         real_images_this_class = Subset(raw_dataset, list(indices_this_class))
     else:
         real_images_this_class = raw_dataset

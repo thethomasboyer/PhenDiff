@@ -19,11 +19,7 @@ from pathlib import Path
 import torch
 from accelerate import Accelerator
 from accelerate.logging import MultiProcessAdapter, get_logger
-from accelerate.utils import (
-    DistributedDataParallelKwargs,
-    ProjectConfiguration,
-    broadcast,
-)
+from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import EMAModel
 
@@ -74,7 +70,7 @@ def main(args: Namespace):
         mixed_precision=args.mixed_precision,
         log_with=args.logger,
         project_config=accelerator_project_config,
-        kwargs_handlers=kwargs_handlers,
+        kwargs_handlers=kwargs_handlers,  # type: ignore
     )
 
     # ------------------------------------- WandB ------------------------------------
@@ -122,7 +118,7 @@ def main(args: Namespace):
     # ------------------------------------ Dataset -----------------------------------
     dataset, raw_dataset, nb_classes = setup_dataset(args, logger)
 
-    train_dataloader = torch.utils.data.DataLoader(
+    train_dataloader = torch.utils.data.DataLoader(  # type: ignore
         dataset,
         batch_size=args.train_batch_size,
         shuffle=True,
@@ -226,11 +222,11 @@ def main(args: Namespace):
     # get the final number of trainig steps
     tot_training_steps: int = min(
         (
-            args.max_num_epochs * len(train_dataloader)
+            args.max_num_epochs * len(train_dataloader)  # type: ignore
             if args.max_num_epochs is not None
             else inf
         ),
-        args.max_num_steps if args.max_num_steps is not None else inf,
+        args.max_num_steps if args.max_num_steps is not None else inf,  # type: ignore
     )
 
     lr_scheduler = get_scheduler(  # TODO: different params for different components
@@ -264,20 +260,6 @@ def main(args: Namespace):
             pipeline.class_embedding = class_embedding
         case _:
             raise ValueError(f"Unknown model type {args.model_type}")
-
-    # synchronize the conditional & unconditional passes of CLF guidance training between the GPUs
-    # to circumvent a nasty and unexplained bug...
-    do_uncond_pass_across_all_procs = torch.zeros(
-        (total_dataloader_len,), device=accelerator.device
-    )
-    if accelerator.is_main_process:
-        # fill tensor on main proc
-        for batch_idx in range(total_dataloader_len):
-            do_uncond_pass_across_all_procs[batch_idx] = (
-                torch.rand(1) < args.proba_uncond
-            )  # always true if proba_uncond == 1 as torch.rand -> [0;1[
-    # broadcast tensor to all procs
-    do_uncond_pass_across_all_procs = broadcast(do_uncond_pass_across_all_procs)
 
     # -------------------------------- Training Setup --------------------------------
     first_epoch = 0
@@ -337,7 +319,6 @@ def main(args: Namespace):
             optimizer=optimizer,
             lr_scheduler=lr_scheduler,
             logger=logger,
-            do_uncond_pass_across_all_procs=do_uncond_pass_across_all_procs,
             params_to_clip=params_to_optimize,
             tot_training_steps=tot_training_steps,
             image_generation_tmp_save_folder=image_generation_tmp_save_folder,
