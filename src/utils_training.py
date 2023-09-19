@@ -176,7 +176,7 @@ def perform_training_epoch(
     repo,
     best_metric,
     chckpt_save_path: Path,
-) -> int:
+) -> tuple[int, float | None]:
     # 1. Retrieve models & set then to train mode if applicable
     # components common to all models
     denoiser_model = pipeline.unet
@@ -320,7 +320,7 @@ def perform_training_epoch(
             args.eval_save_model_every_opti_steps is not None
             and global_step % args.eval_save_model_every_opti_steps == 0
         ):
-            generate_samples_compute_metrics_save_pipe(
+            best_metric = generate_samples_compute_metrics_save_pipe(
                 args,
                 accelerator,
                 pipeline,
@@ -345,7 +345,7 @@ def perform_training_epoch(
     # wait for everybody at end of each training epoch
     accelerator.wait_for_everyone()
 
-    return global_step
+    return global_step, best_metric
 
 
 def _diffusion_and_backward(
@@ -560,7 +560,7 @@ def generate_samples_compute_metrics_save_pipe(
     best_metric: float | None,
     full_pipeline_save_folder: Path,
     repo,
-):
+) -> float | None:
     # try to clear cache before gen
     torch.cuda.empty_cache()
     # generate samples and compute metrics
@@ -590,6 +590,7 @@ def generate_samples_compute_metrics_save_pipe(
             },
             step=global_step,
         )
+        # save pipeline if best model to date
         if epoch != 0 and best_model_to_date:
             save_pipeline(
                 accelerator=accelerator,
@@ -602,6 +603,10 @@ def generate_samples_compute_metrics_save_pipe(
                 ema_models=ema_models,
                 components_to_train_transcribed=components_to_train_transcribed,
             )
+        # return new best metric value
+        return best_metric
+    else:
+        return None
 
 
 @torch.no_grad()

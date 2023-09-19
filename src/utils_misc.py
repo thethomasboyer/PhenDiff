@@ -345,9 +345,11 @@ def is_it_best_model(
     logger: MultiProcessAdapter,
     args: Namespace,
 ) -> tuple[bool, float]:
-    current_value = np.mean(main_metric_values)
+    current_value = float(np.mean(main_metric_values))
     if current_value < best_metric:
-        logger.info(f"New best model with metric {args.main_metric}={current_value}")
+        logger.info(
+            f"New best model with metric {args.main_metric}={current_value} vs {best_metric} before"
+        )
         best_metric = current_value
         best_model_to_date = True
     else:

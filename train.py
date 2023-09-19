@@ -322,7 +322,7 @@ def main(args: Namespace):
         and global_step < tot_training_steps
     ):
         # Training epoch
-        global_step = perform_training_epoch(
+        global_step, best_metric = perform_training_epoch(
             num_update_steps_per_epoch=num_update_steps_per_epoch,
             accelerator=accelerator,
             pipeline=pipeline,
@@ -360,7 +360,7 @@ def main(args: Namespace):
                 and epoch < args.precise_first_n_epochs
             )
         ):
-            generate_samples_compute_metrics_save_pipe(
+            best_metric = generate_samples_compute_metrics_save_pipe(
                 args,
                 accelerator,
                 pipeline,
