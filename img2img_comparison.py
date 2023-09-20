@@ -34,6 +34,7 @@ from omegaconf import DictConfig, OmegaConf
 from src.utils_Img2Img import (
     ClassTransferExperimentParams,
     compute_metrics,
+    get_config_path_and_name,
     load_datasets,
     modify_debug_args,
     perform_class_transfer_experiment,
@@ -57,7 +58,9 @@ def main(cfg: DictConfig) -> None:
 
     # ------------------------------------------- WandB -------------------------------------------
     setup_logger(logger, accelerator)
-    logger.info(f"Logging to project/run: {cfg.project}/{cfg.run_name}")
+    logger.info(
+        f"Logging to entity/project/run: {cfg.entity}/{cfg.project}/{cfg.run_name}"
+    )
     accelerator.init_trackers(
         project_name=cfg.project,
         config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),  # type: ignore
@@ -65,6 +68,7 @@ def main(cfg: DictConfig) -> None:
         # inside the *parent* folder common to all *experiments*
         init_kwargs={
             "wandb": {
+                "entity": cfg.entity,
                 "dir": cfg.exp_parent_folder,
                 "name": cfg.run_name,
                 "save_code": True,
@@ -73,11 +77,14 @@ def main(cfg: DictConfig) -> None:
     )
 
     # ------------------------------------------- Misc. -------------------------------------------
-    # show config
-    logger.info(f"Passed config:\n{OmegaConf.to_yaml(cfg)}")
-    # get output dir
+    # get Hydra config & output dir
     hydra_cfg = hydra.core.hydra_config.HydraConfig.get()  # type: ignore
     output_dir: str = hydra_cfg["runtime"]["output_dir"]
+    # show config
+    config_path, config_name = get_config_path_and_name(cfg, hydra_cfg)
+    logger.info(f"Config path: {config_path}")
+    logger.info(f"Config name: {config_name}")
+    logger.info(f"Passed config:\n{OmegaConf.to_yaml(cfg)}")
     # set cache folders
     fidelity_cache_root: Path = Path(cfg.exp_parent_folder, ".fidelity_cache")
     torch_hub_cache_dir = Path(cfg.exp_parent_folder, ".torch_hub_cache")

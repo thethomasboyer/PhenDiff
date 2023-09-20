@@ -826,3 +826,44 @@ def modify_debug_args(cfg: DictConfig, logger: MultiProcessAdapter) -> Optional[
         num_inference_steps = None
 
     return num_inference_steps
+
+
+def get_config_path_and_name(cfg: DictConfig, hydra_cfg) -> tuple[Path, Path]:
+    """Returns the 'config_path' and 'config_name' args passed to hydra.
+
+    Arguments
+    =========
+    - cfg: `DictConfig`
+
+        The config object passed to the main function by hydra.
+
+    - hydra_cfg
+
+        The hydra-specific config automatically retrieved by hydra (typically accessed with `hydra.core.hydra_config.HydraConfig.get()`)
+
+    Returns
+    =======
+    - config_path: `Path`
+
+        The search path where hydra has searched the config file used to launch the job.
+
+    - config_name: `Path`
+
+        The name of the config file used to launch the job.
+    """
+    # 1. Get the config_path (passed as config_path to hydra)
+    launcher_config_path = None
+    for cfg_source in hydra_cfg.runtime.config_sources:
+        if cfg_source.provider == "main":
+            assert (  # just a quick check
+                cfg_source.schema == "file"
+            ), "Internal error: Expected 'file://' schema from 'main' config source"
+            launcher_config_path = Path(cfg_source.path)
+            break
+    if launcher_config_path is None:
+        raise RuntimeError("Could not find main config path")
+
+    # 2. Get the config name
+    task_config_name = Path(hydra_cfg.job.config_name)
+
+    return launcher_config_path, task_config_name
