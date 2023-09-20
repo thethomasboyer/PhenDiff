@@ -43,6 +43,7 @@ from .pipeline_conditional_ddim import ConditionalDDIMPipeline
 DEBUG_BATCHES_LIMIT = 0
 MAX_NB_LOGGED_IMAGES = 50
 DEFAULT_KID_SUBSET_SIZE = 1000
+DEBUG_KID_SUBSET_SIZE = 10
 
 
 class ClassTransferExperimentParams:
@@ -814,18 +815,20 @@ def _decode_to_images(
     return images
 
 
-def modify_debug_args(cfg: DictConfig, logger: MultiProcessAdapter) -> Optional[int]:
+def modify_debug_args(
+    cfg: DictConfig, logger: MultiProcessAdapter
+) -> Tuple[Optional[int], DictConfig]:
     # Quick gen if debug flag
     if cfg.debug:
         num_inference_steps = 10
         logger.warning(
-            f"Debug mode: setting num_inference_steps to {num_inference_steps} and kid_subset_size to {DEBUG_BATCHES_LIMIT}"
+            f"Debug mode: setting num_inference_steps to {num_inference_steps} and kid_subset_size to {DEBUG_KID_SUBSET_SIZE}"
         )
-        cfg.min_kid_subset_size = DEBUG_BATCHES_LIMIT
+        cfg.min_kid_subset_size = DEBUG_KID_SUBSET_SIZE
     else:  # else let each pipeline have its own param
         num_inference_steps = None
 
-    return num_inference_steps
+    return num_inference_steps, cfg
 
 
 def get_config_path_and_name(cfg: DictConfig, hydra_cfg) -> tuple[Path, Path]:

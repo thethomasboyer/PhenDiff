@@ -16,6 +16,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
+from warnings import warn
 
 import hydra
 import submitit
@@ -143,9 +144,12 @@ def main(cfg: DictConfig) -> None:
         this_experiment_folder.mkdir(parents=True)
         # hydra.run.dir will add timestamped subfolders when job will effectively be launched
     # copy config_path to experiment folder
+    dst_path = Path(this_experiment_folder, launcher_config_path.name)
+    if dst_path.exists():
+        warn("Config already exists in experiment folder, overriding it.")
     task_config_path = shutil.copytree(
         launcher_config_path,
-        Path(this_experiment_folder, launcher_config_path.name),
+        dst_path,
         dirs_exist_ok=True,
     )
 

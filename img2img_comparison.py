@@ -91,7 +91,7 @@ def main(cfg: DictConfig) -> None:
     torch.hub.set_dir(torch_hub_cache_dir)
 
     # ------------------------------------------- Debug -------------------------------------------
-    num_inference_steps = modify_debug_args(cfg, logger)
+    num_inference_steps, cfg = modify_debug_args(cfg, logger)
 
     # --------------------------------- Load pretrained pipelines ---------------------------------
     logger.info(f"\033[1m==========================> Loading pipelines\033[0m")
