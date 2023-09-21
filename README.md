@@ -66,7 +66,32 @@ Image-to-image class transfer experiments are performed with the `img2img_compar
 ```sh
 python img2img_comparison_launcher.py {hydra overrides} &
 ```
+## Configuration
 
 The image-to-image class transfer experiments are configures with [Hydra](https://hydra.cc/). Example configuration files can be found in the `examples/example_img2img_comparison_conf` folder. 
 
-The `img2img_comparison_launcher.py` script expects a configuration folder named `my_img2img_comparison_conf` to be located in the directory where it is called, and a filed named `general_config.yaml` inside this configuration folder.
+The `img2img_comparison_launcher.py` script expects a configuration folder named `my_img2img_comparison_conf` to be located in the directory where it is called, and a filed named `general_config.yaml` inside this configuration folder.  
+These defaults can be overriden with the ` --config-path` and `--config-name` Hydra arguments.
+
+> [!NOTE]
+> To prevent the experiment config being modified between the job submission and the job launch (which can typically take quite some time when submitting to SLURM), the entire config is copied to the experiment folder and the submitted job will pull its config from there.
+
+## Hyperparameters sweep
+
+TODO
+
+# Outputs
+All experiments (either training or class transfer) output artifacts following the project/run organization of wandb:
+```
+- exp_parent_folder
+|   - project
+|   |   - run_name
+```
+where `exp_parent_folder` is any base path on the system, and `project` and `run_name` are both the names of the folder created by the scripts on the system and the project and run names on wandb (1-on-1 correspondence).  
+When Hydra is used, an additional timestamped sub-folder hierarchy is also created under the `run_name` folder:
+```
+- run_name
+|   - day
+|   |   - hour
+```
+This is especially important when doing sweeps, so that runs with the same name but with different hyperparameters do not overwrite each other.

@@ -13,14 +13,17 @@
 # limitations under the License.
 
 import os
+import shutil
 from math import ceil
 from pathlib import Path
 from typing import Literal, Optional, Tuple
+from warnings import warn
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch_fidelity
+import yaml
 from accelerate import Accelerator
 from accelerate.logging import MultiProcessAdapter
 from datasets import load_dataset
@@ -42,8 +45,7 @@ from .pipeline_conditional_ddim import ConditionalDDIMPipeline
 
 DEBUG_BATCHES_LIMIT = 0
 MAX_NB_LOGGED_IMAGES = 50
-DEFAULT_KID_SUBSET_SIZE = 1000
-DEBUG_KID_SUBSET_SIZE = 10
+DEBUG_KID_SUBSET_SIZE = 1
 
 
 class ClassTransferExperimentParams:
@@ -425,7 +427,7 @@ def perform_class_transfer_experiment(args: ClassTransferExperimentParams):
                 # Stop if debug flag
                 if args.cfg.debug and step >= DEBUG_BATCHES_LIMIT:
                     args.logger.warn(
-                        f"debug flag: stopping after {DEBUG_BATCHES_LIMIT+1} batche(s)"
+                        f"debug flag: stopping after {DEBUG_BATCHES_LIMIT+1} batche(s), transferred {clean_images.shape[0]} images"
                     )
                     break
 
@@ -441,19 +443,12 @@ def compute_metrics(
             bs = args.cfg.batch_sizes[pipename][args.class_transfer_method]
 
             nb_samples = len(dataset)
-            if nb_samples < args.cfg.min_kid_subset_size:
+            if nb_samples < args.cfg.kid_subset_size:
                 compute_kid = False
             elif args.cfg.compute_kid:
                 compute_kid = True
             else:
                 compute_kid = False
-
-            # enough to compute KID but still lower than default;
-            # set min_kid_subset_size to DEFAULT_KID_SUBSET_SIZE to skip this logic
-            if compute_kid and nb_samples < DEFAULT_KID_SUBSET_SIZE:
-                kid_subset_size = nb_samples
-            else:
-                kid_subset_size = DEFAULT_KID_SUBSET_SIZE
 
             # 1. Unconditional
             args.logger.info("Computing metrics (unconditional case)")
@@ -474,7 +469,7 @@ def compute_metrics(
                 verbose=False,
                 cache_root=args.fidelity_cache_root,
                 # input1_cache_name=f"{class_name}",  # TODO: force caching
-                kid_subset_size=kid_subset_size,
+                kid_subset_size=args.cfg.kid_subset_size,
                 samples_find_deep=True,
             )
             # prepare to log metrics
@@ -512,7 +507,7 @@ def compute_metrics(
                     verbose=False,
                     cache_root=args.fidelity_cache_root,
                     # input1_cache_name=f"{class_name}",  # TODO: force caching
-                    kid_subset_size=kid_subset_size,
+                    kid_subset_size=args.cfg.kid_subset_size,
                     samples_find_deep=False,
                 )
                 # log metrics
@@ -824,14 +819,14 @@ def modify_debug_args(
         logger.warning(
             f"Debug mode: setting num_inference_steps to {num_inference_steps} and kid_subset_size to {DEBUG_KID_SUBSET_SIZE}"
         )
-        cfg.min_kid_subset_size = DEBUG_KID_SUBSET_SIZE
+        cfg.kid_subset_size = DEBUG_KID_SUBSET_SIZE
     else:  # else let each pipeline have its own param
         num_inference_steps = None
 
     return num_inference_steps, cfg
 
 
-def get_config_path_and_name(cfg: DictConfig, hydra_cfg) -> tuple[Path, Path]:
+def _get_config_path_and_name(cfg: DictConfig, hydra_cfg) -> tuple[Path, Path]:
     """Returns the 'config_path' and 'config_name' args passed to hydra.
 
     Arguments
@@ -870,3 +865,38 @@ def get_config_path_and_name(cfg: DictConfig, hydra_cfg) -> tuple[Path, Path]:
     task_config_name = Path(hydra_cfg.job.config_name)
 
     return launcher_config_path, task_config_name
+
+
+def duplicate_config_to_experiment_folder(cfg: DictConfig, hydra_cfg):
+    # 1. Get this launcher's config
+    launcher_config_path, launcher_config_name = _get_config_path_and_name(
+        cfg, hydra_cfg
+    )
+
+    # 2. Get the experiment folder
+    this_experiment_folder = Path(cfg.exp_parent_folder, cfg.project, cfg.run_name)
+    # this is hard-coded!
+    if not this_experiment_folder.exists():
+        this_experiment_folder.mkdir(parents=True)
+
+    # 3. Copy config_path to experiment folder
+    dst_path = Path(this_experiment_folder, launcher_config_path.name)
+    if dst_path.exists():
+        warn("Config already exists in experiment folder, overriding it.")
+    task_config_path = shutil.copytree(
+        launcher_config_path,
+        dst_path,
+        dirs_exist_ok=True,
+    )
+
+    # 4. Hardcode Hydra output dir so that a single one is used (including across processes)
+    new_config_name_path = Path(task_config_path, launcher_config_name).with_suffix(
+        ".yaml"
+    )
+    with open(new_config_name_path, "r") as f:
+        cfg_file_data = yaml.safe_load(f)
+    cfg_file_data["hydra"]["run"]["dir"] = hydra_cfg["run"]["dir"]
+    with open(new_config_name_path, "w") as f:
+        yaml.dump(cfg_file_data, f)
+
+    return task_config_path, launcher_config_name

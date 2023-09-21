@@ -15,8 +15,8 @@
 ###################################### img2img_comparison.py ######################################
 # This script launches a series of experiments to compare class-to-class image transfer methods.
 #
-# Its config is located in the img2img_comparison_conf folder and managed with hydra
-# (https://hydra.cc/).
+# Its config is located in the my_img2img_comparison_conf folder (by default) and managed
+# with hydra (https://hydra.cc/).
 #
 # The experiments are logged with wandb (https://wandb.ai) and run sequentially,
 # with metrics computed at the end of each experiment with torch-fidelity.
@@ -33,8 +33,8 @@ from omegaconf import DictConfig, OmegaConf
 
 from src.utils_Img2Img import (
     ClassTransferExperimentParams,
+    _get_config_path_and_name,
     compute_metrics,
-    get_config_path_and_name,
     load_datasets,
     modify_debug_args,
     perform_class_transfer_experiment,
@@ -81,7 +81,7 @@ def main(cfg: DictConfig) -> None:
     hydra_cfg = hydra.core.hydra_config.HydraConfig.get()  # type: ignore
     output_dir: str = hydra_cfg["runtime"]["output_dir"]
     # show config
-    config_path, config_name = get_config_path_and_name(cfg, hydra_cfg)
+    config_path, config_name = _get_config_path_and_name(cfg, hydra_cfg)
     logger.info(f"Config path: {config_path}")
     logger.info(f"Config name: {config_name}")
     logger.info(f"Passed config:\n{OmegaConf.to_yaml(cfg)}")

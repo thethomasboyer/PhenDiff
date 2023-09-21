@@ -12,17 +12,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+################################## img2img_comparison_launcher.py #################################
+# This script acts as a wrapper-launcher of the img2img_comparison.py script.
+#
+# It performs the following tasks:
+# - copy the experiment config to the experiment folder
+# (to ensure that is is not modified if the actual job launch is delayed)
+# - modify this copied config so that Hydra uses one single output folder
+# (instead of one output folder per process + job launch time)
+# - configure accelerate
+# - configure SLURM (if enabled)
+# - set some environment variables
+# - submit the task
+
+
 import os
-import shutil
 import sys
 from pathlib import Path
-from warnings import warn
 
 import hydra
 import submitit
 from omegaconf import DictConfig, ListConfig
 
-from src.utils_Img2Img import get_config_path_and_name
+from src.utils_Img2Img import duplicate_config_to_experiment_folder
 
 # hardcoded config paths
 DEFAULT_CONFIG_PATH = "my_img2img_comparison_conf"
@@ -134,23 +146,10 @@ def main(cfg: DictConfig) -> None:
 
     # Create experiment folder & copy config
     # (to prevent config modif when delaying launches)
-    # get this launcher's config
-    launcher_config_path, launcher_config_name = get_config_path_and_name(
+    # hydra.run.dir will be set to the timestamped subfolder created by hydra
+    # when *this* *launcher* job was launched
+    task_config_path, launcher_config_name = duplicate_config_to_experiment_folder(
         cfg, hydra_cfg
-    )
-    # get experiment folder
-    this_experiment_folder = Path(cfg.exp_parent_folder, cfg.project, cfg.run_name)
-    if not this_experiment_folder.exists():
-        this_experiment_folder.mkdir(parents=True)
-        # hydra.run.dir will add timestamped subfolders when job will effectively be launched
-    # copy config_path to experiment folder
-    dst_path = Path(this_experiment_folder, launcher_config_path.name)
-    if dst_path.exists():
-        warn("Config already exists in experiment folder, overriding it.")
-    task_config_path = shutil.copytree(
-        launcher_config_path,
-        dst_path,
-        dirs_exist_ok=True,
     )
 
     # Task
