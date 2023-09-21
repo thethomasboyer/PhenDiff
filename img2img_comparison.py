@@ -15,8 +15,8 @@
 ###################################### img2img_comparison.py ######################################
 # This script launches a series of experiments to compare class-to-class image transfer methods.
 #
-# Its config is located in the img2img_comparison_conf folder and managed with hydra
-# (https://hydra.cc/).
+# Its config is located in the my_img2img_comparison_conf folder (by default) and managed
+# with hydra (https://hydra.cc/).
 #
 # The experiments are logged with wandb (https://wandb.ai) and run sequentially,
 # with metrics computed at the end of each experiment with torch-fidelity.
@@ -33,6 +33,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from src.utils_Img2Img import (
     ClassTransferExperimentParams,
+    _get_config_path_and_name,
     compute_metrics,
     load_datasets,
     modify_debug_args,
@@ -57,7 +58,9 @@ def main(cfg: DictConfig) -> None:
 
     # ------------------------------------------- WandB -------------------------------------------
     setup_logger(logger, accelerator)
-    logger.info(f"Logging to project/run: {cfg.project}/{cfg.run_name}")
+    logger.info(
+        f"Logging to entity/project/run: {cfg.entity}/{cfg.project}/{cfg.run_name}"
+    )
     accelerator.init_trackers(
         project_name=cfg.project,
         config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),  # type: ignore
@@ -65,6 +68,7 @@ def main(cfg: DictConfig) -> None:
         # inside the *parent* folder common to all *experiments*
         init_kwargs={
             "wandb": {
+                "entity": cfg.entity,
                 "dir": cfg.exp_parent_folder,
                 "name": cfg.run_name,
                 "save_code": True,
@@ -73,18 +77,21 @@ def main(cfg: DictConfig) -> None:
     )
 
     # ------------------------------------------- Misc. -------------------------------------------
-    # show config
-    logger.info(f"Passed config:\n{OmegaConf.to_yaml(cfg)}")
-    # get output dir
+    # get Hydra config & output dir
     hydra_cfg = hydra.core.hydra_config.HydraConfig.get()  # type: ignore
     output_dir: str = hydra_cfg["runtime"]["output_dir"]
+    # show config
+    config_path, config_name = _get_config_path_and_name(cfg, hydra_cfg)
+    logger.info(f"Config path: {config_path}")
+    logger.info(f"Config name: {config_name}")
+    logger.info(f"Passed config:\n{OmegaConf.to_yaml(cfg)}")
     # set cache folders
     fidelity_cache_root: Path = Path(cfg.exp_parent_folder, ".fidelity_cache")
     torch_hub_cache_dir = Path(cfg.exp_parent_folder, ".torch_hub_cache")
     torch.hub.set_dir(torch_hub_cache_dir)
 
     # ------------------------------------------- Debug -------------------------------------------
-    num_inference_steps = modify_debug_args(cfg, logger)
+    num_inference_steps, cfg = modify_debug_args(cfg, logger)
 
     # --------------------------------- Load pretrained pipelines ---------------------------------
     logger.info(f"\033[1m==========================> Loading pipelines\033[0m")

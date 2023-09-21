@@ -12,18 +12,59 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+################################## img2img_comparison_launcher.py #################################
+# This script acts as a wrapper-launcher of the img2img_comparison.py script.
+#
+# It performs the following tasks:
+# - copy the experiment config to the experiment folder
+# (to ensure that is is not modified if the actual job launch is delayed)
+# - modify this copied config so that Hydra uses one single output folder
+# (instead of one output folder per process + job launch time)
+# - configure accelerate
+# - configure SLURM (if enabled)
+# - set some environment variables
+# - submit the task
+
+
 import os
 import sys
+from pathlib import Path
 
 import hydra
 import submitit
 from omegaconf import DictConfig, ListConfig
 
+from src.utils_Img2Img import duplicate_config_to_experiment_folder
+
+# hardcoded config paths
+DEFAULT_CONFIG_PATH = "my_img2img_comparison_conf"
+DEFAULT_CONFIG_NAME = "general_config"
+
 
 class Task:
-    def __init__(self, cfg: DictConfig, overrides: ListConfig):
+    """
+    Represents an `accelerate launch img2img_comparison.py` command call to the system.
+
+    When `__call__`'ed, `Task` will:
+    - pass the given config to `img2img_comparison.py`
+    - configure `accelerate` with the given config
+    - set some environment variables
+    - submit the command with `os.system`
+
+    Can be called directly or submitted to SLURM with `submitit`.
+    """
+
+    def __init__(
+        self,
+        cfg: DictConfig,
+        overrides: ListConfig,
+        task_config_path: Path,
+        task_config_name: Path,
+    ):
         self.cfg: DictConfig = cfg
         self.overrides: ListConfig = overrides
+        self.task_config_path: Path = task_config_path
+        self.task_config_name: Path = task_config_name
 
     def __call__(self):
         # Accelerate config
@@ -31,6 +72,8 @@ class Task:
         for cfg_item_name, cfg_item_value in self.cfg.accelerate.launch_args.items():
             if cfg_item_value is True or cfg_item_value in ["True", "true"]:
                 accelerate_cfg += f"--{cfg_item_name} "
+            elif cfg_item_value is False or cfg_item_value in ["False", "false"]:
+                pass
             else:
                 accelerate_cfg += f"--{cfg_item_name} {cfg_item_value} "
 
@@ -43,7 +86,7 @@ class Task:
             offline_vars = ""
 
         # Launched command
-        final_cmd = f"{offline_vars}accelerate launch {accelerate_cfg} {self.cfg.path_to_script_parent_folder}/img2img_comparison.py"
+        final_cmd = f"{offline_vars}accelerate launch {accelerate_cfg} {self.cfg.path_to_script_parent_folder}/img2img_comparison.py --config-path {self.task_config_path} --config-name {self.task_config_name}"
 
         for override in self.overrides:
             final_cmd += f" {override}"
@@ -58,8 +101,8 @@ class Task:
 
 @hydra.main(
     version_base=None,
-    config_path="my_img2img_comparison_conf",
-    config_name="general_config",
+    config_path=DEFAULT_CONFIG_PATH,
+    config_name=DEFAULT_CONFIG_NAME,
 )
 def main(cfg: DictConfig) -> None:
     if cfg.slurm.enabled:
@@ -101,8 +144,16 @@ def main(cfg: DictConfig) -> None:
     hydra_cfg = hydra.core.hydra_config.HydraConfig.get()  # type: ignore
     overrides: ListConfig = hydra_cfg.overrides.task
 
+    # Create experiment folder & copy config
+    # (to prevent config modif when delaying launches)
+    # hydra.run.dir will be set to the timestamped subfolder created by hydra
+    # when *this* *launcher* job was launched
+    task_config_path, launcher_config_name = duplicate_config_to_experiment_folder(
+        cfg, hydra_cfg
+    )
+
     # Task
-    task = Task(cfg, overrides)
+    task = Task(cfg, overrides, task_config_path, launcher_config_name)
 
     # Submit
     if cfg.slurm.enabled:

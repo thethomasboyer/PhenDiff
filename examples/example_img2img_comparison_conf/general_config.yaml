@@ -14,6 +14,7 @@ defaults:
 ####################################### EXPERIMENT VARIABLES ######################################
 exp_parent_folder: ./experiments
 path_to_script_parent_folder: path/to/repo/folder
+entity: entity_name
 project: project_name
 run_name: run_name
 
@@ -52,7 +53,7 @@ accelerate:
 compute_fid: true
 compute_isc: true
 compute_kid: true
-min_kid_subset_size: 1000 # 1000 is the default in torch-fidelity
+kid_subset_size: 1000 # 1000 is the default in torch-fidelity
 
 ########################################## MISCELLANEOUS ##########################################
 debug: false
