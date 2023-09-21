@@ -1,8 +1,8 @@
 DDIM:
   linear_interp_custom_guidance_inverted_start: 96
-  classifier_free_guidance_forward_start: 128
-  ddib: 128
+  classifier_free_guidance_forward_start: 288
+  ddib: 288
 SD:
   linear_interp_custom_guidance_inverted_start: 128
   classifier_free_guidance_forward_start: 256
-  ddib: 256
+  ddib: 512
