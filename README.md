@@ -70,7 +70,7 @@ python img2img_comparison_launcher.py {hydra overrides} &
 
 The image-to-image class transfer experiments are configured with [Hydra](https://hydra.cc/). Example configuration files can be found in the `examples/example_img2img_comparison_conf` folder. 
 
-The `img2img_comparison_launcher.py` script expects a configuration folder named `my_img2img_comparison_conf` to be located in the directory where it is called, and a filed named `general_config.yaml` inside this configuration folder.  
+The `img2img_comparison_launcher.py` script expects a configuration folder named `my_img2img_comparison_conf` to be located in the directory where it is called, and a file named `general_config.yaml` inside this configuration folder.  
 These defaults can be overriden with the ` --config-path` and `--config-name` Hydra arguments.
 
 > [!NOTE]
