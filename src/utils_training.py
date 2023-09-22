@@ -50,6 +50,7 @@ from .utils_misc import (
     save_checkpoint,
     split,
 )
+from .utils_models import SupportedPipelines
 
 
 def resume_from_checkpoint(
@@ -103,7 +104,7 @@ def get_training_setup(
     components_to_train_transcribed: list[str],
     nb_tot_samples: int,
     nb_tot_samples_raw_ds: int,
-    noise_scheduler: DDIMScheduler,
+    pipeline: SupportedPipelines,
     tot_training_steps: int,
 ) -> tuple[int, list[int]]:
     """
@@ -141,7 +142,7 @@ def get_training_setup(
         args,
         pipeline_components,
         components_to_train_transcribed,
-        noise_scheduler,
+        pipeline,
         nb_tot_samples,
         nb_tot_samples_raw_ds,
         total_batch_size,
@@ -154,7 +155,7 @@ def get_training_setup(
 def perform_training_epoch(
     num_update_steps_per_epoch: int,
     accelerator: Accelerator,
-    pipeline: CustomStableDiffusionImg2ImgPipeline | ConditionalDDIMPipeline,
+    pipeline: SupportedPipelines,
     ema_models: dict[str, EMAModel],
     components_to_train_transcribed: list[str],
     epoch: int,
@@ -527,7 +528,7 @@ def _DDIM_prediction_wrapper(
 
 def _syn_training_state(
     args: Namespace,
-    pipeline: CustomStableDiffusionImg2ImgPipeline | ConditionalDDIMPipeline,
+    pipeline: SupportedPipelines,
     components_to_train_transcribed: list[str],
     ema_models: dict[str, EMAModel],
     progress_bar,
@@ -563,7 +564,7 @@ def _syn_training_state(
 def generate_samples_compute_metrics_save_pipe(
     args: Namespace,
     accelerator: Accelerator,
-    pipeline: CustomStableDiffusionImg2ImgPipeline | ConditionalDDIMPipeline,
+    pipeline: SupportedPipelines,
     image_generation_tmp_save_folder: Path,
     fidelity_cache_root: Path,
     actual_eval_batch_sizes_for_this_process: list[int],
@@ -631,7 +632,7 @@ def generate_samples_compute_metrics_save_pipe(
 def _generate_samples_and_compute_metrics(
     args: Namespace,
     accelerator: Accelerator,
-    pipeline: CustomStableDiffusionImg2ImgPipeline | ConditionalDDIMPipeline,
+    pipeline: SupportedPipelines,
     image_generation_tmp_save_folder: Path,
     fidelity_cache_root: Path,
     actual_eval_batch_sizes_for_this_process: list[int],
@@ -991,7 +992,7 @@ def _compute_log_metrics(
 def save_pipeline(
     accelerator: Accelerator,
     args: Namespace,
-    pipeline: CustomStableDiffusionImg2ImgPipeline | ConditionalDDIMPipeline,
+    pipeline: SupportedPipelines,
     full_pipeline_save_folder: Path,
     repo,
     epoch: int,

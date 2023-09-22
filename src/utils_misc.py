@@ -25,8 +25,9 @@ import numpy as np
 import torch
 from accelerate import Accelerator
 from accelerate.logging import MultiProcessAdapter
-from diffusers import DDIMScheduler
 from huggingface_hub import HfFolder, whoami
+
+from .utils_models import SupportedPipelines
 
 
 def extract_into_tensor(arr, timesteps, broadcast_shape):
@@ -412,7 +413,7 @@ def print_info_at_run_start(
     args: Namespace,
     pipeline_components: list[str],
     components_to_train_transcribed: list[str],
-    noise_scheduler: DDIMScheduler,
+    pipeline: SupportedPipelines,
     tot_nb_samples: int,
     nb_tot_samples_raw_ds: int,
     total_batch_size: int,
@@ -424,6 +425,27 @@ def print_info_at_run_start(
         "Model",
         args.model_type,
     )
+    # compute tot params per trainable component
+    for component_name, component in pipeline.components.items():
+        if (
+            component_name in components_to_train_transcribed
+            and hasattr(component, "parameters")
+            and callable(getattr(component, "parameters"))
+        ):
+            tot_params = sum(p.numel() for p in component.parameters())
+            tot_trainable_params = sum(
+                p.numel() for p in component.parameters() if p.requires_grad
+            )
+            _pretty_info_log(
+                logger,
+                f"Num parameters for {component_name}",
+                f"{tot_params:,d}",
+            )
+            _pretty_info_log(
+                logger,
+                f"Num trainable parameters for {component_name}",
+                f"{tot_trainable_params:,d}",
+            )
     _pretty_info_log(
         logger,
         "Experiment name",
@@ -445,7 +467,7 @@ def print_info_at_run_start(
     _pretty_info_log(
         logger,
         "Num diffusion discretization steps",
-        noise_scheduler.config.num_train_timesteps,
+        pipeline.scheduler.config.num_train_timesteps,
     )
     _pretty_info_log(
         logger,
@@ -465,7 +487,7 @@ def print_info_at_run_start(
     _pretty_info_log(
         logger,
         "Prediction type",
-        noise_scheduler.config.prediction_type,
+        pipeline.scheduler.config.prediction_type,
     )
     _pretty_info_log(
         logger,
