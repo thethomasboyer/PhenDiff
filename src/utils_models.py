@@ -8,6 +8,7 @@ from diffusers import (
     StableDiffusionImg2ImgPipeline,
     UNet2DConditionModel,
 )
+from diffusers.models import AutoencoderKL
 
 from .cond_unet_2d import CustomCondUNet2DModel
 from .custom_embedding import CustomEmbedding
@@ -15,6 +16,8 @@ from .custom_pipeline_stable_diffusion_img2img import (
     CustomStableDiffusionImg2ImgPipeline,
 )
 from .pipeline_conditional_ddim import ConditionalDDIMPipeline
+
+SupportedPipelines = CustomStableDiffusionImg2ImgPipeline | ConditionalDDIMPipeline
 
 
 # -------------------------------------------- Main Function --------------------------------------------
@@ -24,7 +27,7 @@ def load_initial_pipeline(
     logger: MultiProcessAdapter,
     nb_classes: int,
     accelerator: Accelerator,
-) -> CustomStableDiffusionImg2ImgPipeline | ConditionalDDIMPipeline:
+) -> SupportedPipelines:
     """Loads and customizes the initial pipeline (either pretrained or not).
 
     At the end of this function the entire pipeline should be in its 'final' initial state,
@@ -57,7 +60,9 @@ def load_initial_pipeline(
 
 
 # ---------------------------------------------- Pipelines ----------------------------------------------
-# All pipelines should at least call _load_and_override_noise_scheduler
+# All pipelines should least call _load_and_override_noise_scheduler if a noise scheduler is used
+
+
 def _load_custom_SD(
     args: Namespace,
     initial_pipeline_save_folder: Path,
@@ -105,7 +110,9 @@ def _load_custom_SD(
     # 4. Log the final denoiser config
     if accelerator.is_main_process:
         wandb_tracker = accelerator.get_tracker("wandb", unwrap=True)
-        wandb_tracker.config["denoiser_model_config"] = pipeline.unet.config
+        wandb_tracker.config.update(
+            {"denoiser_model_config": pipeline.unet.config}, allow_val_change=True
+        )
 
     return pipeline
 
@@ -146,7 +153,9 @@ def _load_custom_DDIM_from_scratch(
     # Log the final denoiser config
     if accelerator.is_main_process:
         wandb_tracker = accelerator.get_tracker("wandb", unwrap=True)
-        wandb_tracker.config["denoiser_model_config"] = denoiser_model_config
+        wandb_tracker.config.update(
+            {"denoiser_model_config": denoiser_model_config}, allow_val_change=True
+        )
     denoiser_model: CustomCondUNet2DModel = CustomCondUNet2DModel.from_config(
         denoiser_model_config,
     )
@@ -213,6 +222,8 @@ def _load_and_override_noise_scheduler(
     # 4 Log the *final* config
     if accelerator.is_main_process:
         wandb_tracker = accelerator.get_tracker("wandb", unwrap=True)
-        wandb_tracker.config["noise_scheduler_config"] = noise_scheduler.config
+        wandb_tracker.config.update(
+            {"noise_scheduler_config": noise_scheduler.config}, allow_val_change=True
+        )
 
     return noise_scheduler

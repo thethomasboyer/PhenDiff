@@ -40,6 +40,12 @@ def parse_args() -> Namespace:
         required=True,
     )
     parser.add_argument(
+        "--attention_fine_tuning",
+        default=False,
+        action="store_true",
+        help="Whether to fine-tune only the attention layers or not.",
+    )
+    parser.add_argument(
         "--dataset_name",
         type=str,
         help=(
@@ -126,6 +132,12 @@ def parse_args() -> Namespace:
         type=str,
         required=True,
         help="The common parent directory of all the experiment-specific folders where the files/folders common to all experiments will be saved (e.g. Inceptionv3 checkpoints for FID computation).",
+    )
+    parser.add_argument(
+        "--wandb_entity",
+        type=str,
+        required=True,
+        help="The name of the Weights & Biases entity",
     )
     parser.add_argument(
         "--experiment_name",
@@ -426,11 +438,6 @@ def parse_args() -> Namespace:
             "Whether training should be resumed from a previous checkpoint. Use a path saved by"
             ' `--checkpointing_steps`, or `"latest"` to automatically select the last available checkpoint.'
         ),
-    )
-    parser.add_argument(
-        "--enable_xformers_memory_efficient_attention",
-        action="store_true",
-        help="Whether or not to use xformers.",
     )
 
     # parse args
