@@ -468,7 +468,7 @@ def compute_metrics(
                 kid=compute_kid,
                 verbose=False,
                 cache_root=args.fidelity_cache_root,
-                # input1_cache_name=f"{class_name}",  # TODO: force caching
+                # input2_cache_name=f"{class_name}",  # TODO: force caching
                 kid_subset_size=args.cfg.kid_subset_size,
                 samples_find_deep=True,
             )
@@ -506,7 +506,7 @@ def compute_metrics(
                     kid=compute_kid,
                     verbose=False,
                     cache_root=args.fidelity_cache_root,
-                    # input1_cache_name=f"{class_name}",  # TODO: force caching
+                    # input2_cache_name=f"{class_name}",  # TODO: force caching
                     kid_subset_size=args.cfg.kid_subset_size,
                     samples_find_deep=False,
                 )

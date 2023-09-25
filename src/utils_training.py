@@ -970,9 +970,9 @@ def _compute_log_metrics(
         kid=args.compute_kid,
         verbose=False,
         cache_root=fidelity_cache_root,
-        input1_cache_name=f"{class_name}",  # forces caching
+        input2_cache_name=f"{class_name}",  # forces caching
         kid_subset_size=args.kid_subset_size,
-        samples_find_deep=args.proba_uncond == 1,
+        samples_find_deep=True,
     )
 
     for metric_name, metric_value in metrics_dict.items():
