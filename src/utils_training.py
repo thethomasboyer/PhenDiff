@@ -16,6 +16,7 @@
 import math
 import os
 from argparse import Namespace
+from inspect import signature
 from math import ceil
 from pathlib import Path
 from shutil import rmtree
@@ -516,12 +517,23 @@ def _DDIM_prediction_wrapper(
         class_emb = None
 
     # Predict the noise residual
-    model_output = denoiser_model(
-        sample=noisy_images,
-        timestep=timesteps,
-        class_labels=class_labels,
-        class_emb=class_emb,
-    ).sample
+    sig = signature(denoiser_model.forward)
+    if "class_emb" in sig.parameters:
+        model_output = denoiser_model(
+            sample=noisy_images,
+            timestep=timesteps,
+            class_labels=class_labels,
+            class_emb=class_emb,
+        ).sample
+    else:
+        assert (
+            not do_unconditional_pass
+        ), "'do_unconditional_pass' is True but the denoiser model does not take a 'class_emb' argument"
+        model_output = denoiser_model(
+            sample=noisy_images,
+            timestep=timesteps,
+            class_labels=class_labels,
+        ).sample
 
     return model_output
 

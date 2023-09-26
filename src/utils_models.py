@@ -42,8 +42,9 @@ def load_initial_pipeline(
                     args, initial_pipeline_save_folder, nb_classes, accelerator
                 )
             case "DDIM":
-                raise NotImplementedError("TODO: test this")
-                # pipeline = _load_custom_DDIM(args, initial_pipeline_save_folder, logger)
+                pipeline = _load_custom_DDIM(
+                    args, initial_pipeline_save_folder, accelerator
+                )
     else:
         match args.model_type:
             case "StableDiffusion":
@@ -89,6 +90,7 @@ def _load_custom_SD(
     else:
         denoiser_model = None  # hack to be able *not* to override the denoiser
     denoiser_model_kwarg = {"denoiser_model": denoiser_model} if denoiser_model else {}
+
     # noise scheduler
     noise_scheduler = _load_and_override_noise_scheduler(
         args, initial_pipeline_save_path, accelerator
@@ -117,30 +119,34 @@ def _load_custom_SD(
     return pipeline
 
 
-# def _load_custom_DDIM(
-#     args: Namespace,
-#     initial_pipeline_save_folder: Path,
-#     logger: MultiProcessAdapter,
-#     accelerator: Accelerator,
-# ):
-#     # 1. Download the pipeline in initial_pipeline_save_folder
-#     initial_pipeline_save_path = ConditionalDDIMPipeline.download(
-#         args.pretrained_model_name_or_path,
-#         cache_dir=initial_pipeline_save_folder,
-#     )
+def _load_custom_DDIM(
+    args: Namespace,
+    initial_pipeline_save_folder: Path,
+    accelerator: Accelerator,
+) -> ConditionalDDIMPipeline:
+    # 1. *Locate* the pipeline in initial_pipeline_save_folder
+    # (no download is actually performed; the downloaded pipeline should already be there)
+    initial_pipeline_save_path = ConditionalDDIMPipeline.download(
+        args.pretrained_model_name_or_path,
+        cache_dir=initial_pipeline_save_folder,
+        local_files_only=True,
+    )
 
-#     # 2. Customize the pipeline components
-#     # noise scheduler
-#     noise_scheduler = _load_and_override_noise_scheduler(
-#         args, initial_pipeline_save_path, accelerator
-#     )
+    # 2. Customize the pipeline components
+    # denoiser
+    # TODO(?)
 
-#     # 3 Create the final pipeline
-#     pipeline = ConditionalDDIMPipeline.from_pretrained(
-#         initial_pipeline_save_path, local_files_only=True, scheduler=noise_scheduler
-#     )
+    # noise scheduler
+    noise_scheduler = _load_and_override_noise_scheduler(
+        args, initial_pipeline_save_path, accelerator
+    )
 
-#     return pipeline
+    # 3 Create the final pipeline
+    pipeline = ConditionalDDIMPipeline.from_pretrained(
+        initial_pipeline_save_path, local_files_only=True, scheduler=noise_scheduler
+    )
+
+    return pipeline
 
 
 def _load_custom_DDIM_from_scratch(

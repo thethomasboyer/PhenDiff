@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from inspect import signature
 from typing import List, Literal, Optional, Tuple, Union
 
 import torch
@@ -20,7 +21,6 @@ from diffusers.schedulers import DDIMScheduler
 from diffusers.utils import is_accelerate_available, randn_tensor
 
 DEFAULT_NUM_INFERENCE_STEPS = 50
-DEFAULT_GUIDANCE_SCALE = 4.5
 
 
 class ConditionalDDIMPipeline(DiffusionPipeline):
@@ -159,7 +159,7 @@ class ConditionalDDIMPipeline(DiffusionPipeline):
             class_emb (`torch.Tensor` or None):
                 The class embeddings to condition on. Should be None if class_labels are passed or a tensor of shape `(batch_size, emb_dim)` otherwise.
             w (`int` or `float` or `torch.Tensor` or None):
-                The guidance factor. Should be None (then falls back to default), or a int/float or a tensor of shape `(batch_size,)` of postive value(s).
+                The guidance factor. Should be None (then no CFG), or a int/float or a tensor of shape `(batch_size,)` of postive value(s) (then CFG depending on the equation used).
             generator (`torch.Generator`, *optional*):
                 One or a list of [torch generator(s)](https://pytorch.org/docs/stable/generated/torch.Generator.html)
                 to make generation deterministic.
@@ -188,6 +188,7 @@ class ConditionalDDIMPipeline(DiffusionPipeline):
             guidance_eqn (`Literal["imagen", "CFG"]`, *optional*, defaults to `"imagen"`):
                 What guidance equation to use. Can be either that of the [Imagen](https://arxiv.org/pdf/2205.11487.pdf#subsection.2.2) paper
                 or that of the original [Classifier-Free Diffusion Guidance](https://arxiv.org/pdf/2207.12598.pdf#equation.3.6) paper.
+                CFG might not be used if `w` is small enough, depending on the equation used.
 
         Returns:
             [`~pipelines.ImagePipelineOutput`] or `tuple`: [`~pipelines.utils.ImagePipelineOutput`] if `return_dict` is
@@ -267,24 +268,40 @@ class ConditionalDDIMPipeline(DiffusionPipeline):
             )
 
         # CLF
-        if w is None:
-            w = DEFAULT_GUIDANCE_SCALE
-
         do_classifier_free_guidance = (
             isinstance(w, torch.Tensor)
-            or (guidance_eqn == "imagen" and w > 1)
-            or (guidance_eqn == "CFG" and w > 0)
+            or (
+                guidance_eqn == "imagen"
+                and (isinstance(w, float) or isinstance(w, int))
+                and w > 1
+            )
+            or (
+                guidance_eqn == "CFG"
+                and (isinstance(w, float) or isinstance(w, int))
+                and w > 0
+            )
         )
-
+        
         for t in self.progress_bar(timesteps):
             # TODO: do the cond & uncond passes at once like for SD!
             # 1. predict noise model_output
-            cond_output = self.unet(
-                sample=image,
-                timestep=t,
-                class_labels=class_labels,
-                class_emb=class_emb,
-            ).sample
+            sig = signature(self.unet.forward)
+            if "class_emb" in sig.parameters:
+                cond_output = self.unet(
+                    sample=image,
+                    timestep=t,
+                    class_labels=class_labels,
+                    class_emb=class_emb,
+                ).sample
+            else:
+                assert (
+                    not do_classifier_free_guidance
+                ), "'do_classifier_free_guidance' is True but the denoiser model does not take a 'class_emb' argument, thus no unconditional training must have been performed. TODO: implement this case."
+                cond_output = self.unet(
+                    sample=image,
+                    timestep=t,
+                    class_labels=class_labels,
+                ).sample
 
             # 2. Form the classifier-free guided score
             if do_classifier_free_guidance:

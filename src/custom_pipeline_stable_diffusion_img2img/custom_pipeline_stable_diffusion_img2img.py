@@ -39,7 +39,6 @@ from src.custom_embedding import CustomEmbedding
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 DEFAULT_NUM_INFERENCE_STEPS = 50
-DEFAULT_GUIDANCE_SCALE = 4.5
 
 
 class CustomStableDiffusionImg2ImgPipeline(DiffusionPipeline):
@@ -341,7 +340,7 @@ class CustomStableDiffusionImg2ImgPipeline(DiffusionPipeline):
 
         if class_labels is not None and class_labels_embeds is not None:
             raise ValueError(
-                f"Cannot forward both `class_labels`: {class_labels} and `class_labels_embeds`: {class_labels_embeds}. Please make sure to"
+                f"Cannot forward both `class_labels` and `class_labels_embeds`. Please make sure to"
                 " only forward one of the two."
             )
         elif class_labels is None and class_labels_embeds is None:
@@ -367,7 +366,7 @@ class CustomStableDiffusionImg2ImgPipeline(DiffusionPipeline):
             and guidance_scale is not None
         ):
             raise ValueError(
-                f"`guidance_scale` has to be of type `float` or `Tensor` or `None` but is {type(guidance_scale)}"
+                f"`guidance_scale` has to be of type `int` or `float` or `Tensor` or `None` but is {type(guidance_scale)}"
             )
 
         if isinstance(guidance_scale, torch.Tensor):
@@ -461,7 +460,7 @@ class CustomStableDiffusionImg2ImgPipeline(DiffusionPipeline):
         strength: float = 0.8,
         add_forward_noise_to_image: bool = True,
         num_inference_steps: Optional[int] = DEFAULT_NUM_INFERENCE_STEPS,
-        guidance_scale: Optional[Union[float, torch.Tensor]] = DEFAULT_GUIDANCE_SCALE,
+        guidance_scale: Optional[Union[float, torch.Tensor]] = None,
         eta: Optional[float] = 0.0,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         class_labels_embeds: Optional[torch.FloatTensor] = None,
@@ -520,7 +519,7 @@ class CustomStableDiffusionImg2ImgPipeline(DiffusionPipeline):
                 The number of denoising steps. More denoising steps usually lead to a higher quality image at the
                 expense of slower inference. This parameter will be modulated by `strength`.
 
-            - guidance_scale (`float` or `Tensor`, *optional*, defaults to DEFAULT_GUIDANCE_SCALE)
+            - guidance_scale (`float` or `Tensor`, *optional*, defaults to None (no CFG performed))
 
                 Guidance scale as introduced in [Classifier-Free Diffusion Guidance](https://arxiv.org/abs/2207.12598).
                 `guidance_scale` is defined as `w` of equation 2. of [Imagen Paper](https://arxiv.org/pdf/2205.11487.pdf).
@@ -602,13 +601,13 @@ class CustomStableDiffusionImg2ImgPipeline(DiffusionPipeline):
         # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`
         # corresponds to doing no classifier free guidance, and for HF guidance_scale <= 1
         # also means no CLF
-        if guidance_scale is None:
-            guidance_scale = DEFAULT_GUIDANCE_SCALE
         if isinstance(guidance_scale, torch.Tensor):
             # assume we do guidance scale if guidance_scale is a tensor
             do_classifier_free_guidance = True
         else:
-            do_classifier_free_guidance = guidance_scale > 1.0
+            do_classifier_free_guidance = (
+                guidance_scale is not None and guidance_scale > 1.0
+            )
 
         # 3. Encode input prompt
         lora_scale = (

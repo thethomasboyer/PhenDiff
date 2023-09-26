@@ -226,9 +226,9 @@ def parse_args() -> Namespace:
     )
     parser.add_argument(
         "--guidance_factor",
-        type=float,
+        type=lambda w: None if w == "None" else float(w),
         help=(
-            "The scaling factor of the guidance. It corresponds to 'ω' in the Imagen paper (https://arxiv.org/pdf/2205.11487.pdf). Note that different models might have other implementations."
+            "The scaling factor of the guidance. It should correspond to 'ω' in the Imagen paper (https://arxiv.org/pdf/2205.11487.pdf). Note that different models might have different implementations. Can be explicitly set to None or to <= 1 to deactivate the guidance."
         ),
     )
     parser.add_argument(
