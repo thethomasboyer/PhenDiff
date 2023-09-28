@@ -389,7 +389,7 @@ def _pretty_info_log(
     key: str,
     val,
     space_char: str = "_",
-    val_loc: int = 78,
+    val_loc: int = 84,
 ) -> None:
     # key:        This would be the TOC item equivalent
     # val:        This would be the TOC page number equivalent
@@ -399,12 +399,12 @@ def _pretty_info_log(
     val_loc = max(5, val_loc)
 
     if val_loc <= len(key):
-        # if val_loc is within the space of key, truncate key and
+        # if val_loc is within the space of key, truncate key
         cut_str = "{:." + str(val_loc - 4) + "}"
         key = cut_str.format(key) + "..." + space_char
 
     space_str = "{:" + space_char + ">" + str(val_loc - len(key) + len(str(val))) + "}"
-    to_print = key + space_str.format("\033[1m" + str(val) + "\033[0m")
+    to_print = "    " + key + space_str.format("\033[1m" + str(val) + "\033[0m")
     logger.info(to_print)
 
 
@@ -420,10 +420,49 @@ def print_info_at_run_start(
     tot_training_steps: int,
 ):
     logger.info("\033[1m" + "*" * 46 + " Running training " + "*" * 46 + "\033[0m")
+    # ----------- Experiment -----------#
+    logger.info("Experiment")
+    _pretty_info_log(
+        logger,
+        "Experiment name",
+        args.experiment_name,
+    )
+    this_experiment_folder = Path(
+        args.exp_output_dirs_parent_folder, args.experiment_name
+    )
+    _pretty_info_log(
+        logger, "Experiment output folder", this_experiment_folder.as_posix()
+    )
+    # ----------- Data -----------#
+    logger.info("Data")
+    _pretty_info_log(
+        logger,
+        "Total number of training examples",
+        tot_nb_samples,
+    )
+    _pretty_info_log(
+        logger,
+        "Total number of examples in the reference dataset",
+        nb_tot_samples_raw_ds,
+    )
+    _pretty_info_log(
+        logger,
+        "Data augmentation on-the-fly",
+        args.data_aug_on_the_fly,
+    )
+    # ----------- Model -----------#
+    logger.info("Model")
     _pretty_info_log(
         logger,
         "Model",
         args.model_type,
+    )
+    _pretty_info_log(logger, "Pretrained model", args.pretrained_model_name_or_path)
+    _pretty_info_log(logger, "Components to train", str(args.components_to_train))
+    _pretty_info_log(
+        logger,
+        "Components kept frozen",
+        str(set(pipeline_components) - set(components_to_train_transcribed)),
     )
     # compute tot params per trainable component
     for component_name, component in pipeline.components.items():
@@ -446,24 +485,8 @@ def print_info_at_run_start(
                 f"Num trainable parameters for {component_name}",
                 f"{tot_trainable_params:,d}",
             )
-    _pretty_info_log(
-        logger,
-        "Experiment name",
-        args.experiment_name,
-    )
-    this_experiment_folder = Path(
-        args.exp_output_dirs_parent_folder, args.experiment_name
-    )
-    _pretty_info_log(
-        logger, "Experiment output folder", this_experiment_folder.as_posix()
-    )
-    _pretty_info_log(logger, "Pretrained model", args.pretrained_model_name_or_path)
-    _pretty_info_log(logger, "Components to train", str(args.components_to_train))
-    _pretty_info_log(
-        logger,
-        "Components kept frozen",
-        str(set(pipeline_components) - set(components_to_train_transcribed)),
-    )
+    # ----------- Diffusion -----------#
+    logger.info("Diffusion training")
     _pretty_info_log(
         logger,
         "Num diffusion discretization steps",
@@ -489,25 +512,12 @@ def print_info_at_run_start(
         "Prediction type",
         pipeline.scheduler.config.prediction_type,
     )
+    # ----------- Opti -----------#
+    logger.info("Optimization")
     _pretty_info_log(
         logger,
         "Learning rate",
         args.learning_rate,
-    )
-    _pretty_info_log(
-        logger,
-        "Total number of training examples",
-        tot_nb_samples,
-    )
-    _pretty_info_log(
-        logger,
-        "Total number of examples in the reference dataset",
-        nb_tot_samples_raw_ds,
-    )
-    _pretty_info_log(
-        logger,
-        "Data augmentation on-the-fly",
-        args.data_aug_on_the_fly,
     )
     _pretty_info_log(
         logger,
@@ -536,13 +546,15 @@ def print_info_at_run_start(
     )
     _pretty_info_log(
         logger,
-        "Use EMA",
-        args.use_ema,
-    )
-    _pretty_info_log(
-        logger,
         "Total optimization steps",
         tot_training_steps,
+    )
+    # ----------- Misc -----------#
+    logger.info("Miscellaneous")
+    _pretty_info_log(
+        logger,
+        "Use EMA",
+        args.use_ema,
     )
     _pretty_info_log(
         logger,
