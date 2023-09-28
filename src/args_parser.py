@@ -212,7 +212,7 @@ def parse_args() -> Namespace:
     )
     parser.add_argument("--compute_fid", action="store_true", default=True)
     parser.add_argument("--compute_isc", action="store_true", default=True)
-    parser.add_argument("--compute_kid", action="store_true", default=True)
+    parser.add_argument("--compute_kid", action="store_true", default=False)
     help_msg = "How many images to generate (per class) for metrics computation. "
     help_msg += (
         "Only a fraction of the first batch will be logged; the rest will be lost."
