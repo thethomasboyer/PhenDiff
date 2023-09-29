@@ -157,11 +157,11 @@ def parse_args() -> Namespace:
         help="The directory where the downloaded models and datasets will be stored.",
     )
     parser.add_argument(
-        "--resolution",
-        type=int,
+        "--definition",
+        type=lambda s: int(s) if s.isdigit() else tuple(int(d) for d in s.split(",")),
         required=True,
         help=(
-            "The resolution for input images, all the images in the train/validation dataset will be resized to this resolution"
+            "The definition of input images. All inputs will be resized to this definition. Can be an int or a tuple of 2 ints passed as 'h,w' exactly."
         ),
     )
     parser.add_argument(
@@ -179,11 +179,27 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "--dataloader_num_workers",
         type=int,
-        default=4,
         help=(
             "The number of subprocesses to use for data loading. 0 means that the data will be loaded in the main"
-            " process."
+            " process. Will default to the number of concurrent processes if None."
         ),
+    )
+    parser.add_argument(
+        "--dataloader_prefetch_factor",
+        type=int,
+        help="The number of batches loaded in advance by each worker.",
+    )
+    parser.add_argument(
+        "--persistent_workers",
+        action="store_true",
+        default=False,
+        help="Wether to shutdown the worker processes after a dataset has been consumed.",
+    )
+    parser.add_argument(
+        "--pin_memory",
+        action="store_true",
+        default=False,
+        help="Wether to copy tensors into CUDA pinned memory before returning them.",
     )
     parser.add_argument(
         "--max_num_epochs",

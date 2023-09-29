@@ -183,6 +183,13 @@ def args_checker(
         or args.eval_save_model_every_opti_steps is not None
     ), "Either eval_save_model_every_opti_steps or eval_save_model_every_epochs must be provided."
 
+    assert isinstance(args.definition, int) or (
+        isinstance(args.definition, tuple)
+        and len(args.definition) == 2
+        and isinstance(args.definition[0], int)
+        and isinstance(args.definition[1], int)
+    ), "--definition must be an int or a tuple of two ints"
+
 
 def create_repo_structure(
     args: Namespace, accelerator, logger: MultiProcessAdapter
@@ -287,7 +294,7 @@ def setup_logger(logger: MultiProcessAdapter, accelerator) -> None:
     logger.info(accelerator.state, main_process_only=False)
     if accelerator.is_local_main_process:
         datasets.utils.logging.set_verbosity_warning()
-        diffusers.utils.logging.set_verbosity_info()
+        diffusers.utils.logging.set_verbosity_warning()
     else:
         datasets.utils.logging.set_verbosity_error()
         diffusers.utils.logging.set_verbosity_error()

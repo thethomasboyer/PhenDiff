@@ -101,10 +101,12 @@ def setup_dataset(
 
     # Preprocessing the datasets and DataLoaders creation
     # transforms for the training dataset
+    if isinstance(args.definition, int):
+        (h, w) = (args.definition, args.definition)
+    else:
+        (h, w) = args.definition
     list_transforms = [
-        transforms.Resize(
-            args.resolution, interpolation=transforms.InterpolationMode.BILINEAR
-        ),
+        transforms.Resize((h, w), interpolation=transforms.InterpolationMode.BILINEAR),
         transforms.ToTensor(),
         transforms.Normalize([0.5], [0.5]),  # map to [-1, 1] for SiLU
     ]
@@ -118,7 +120,7 @@ def setup_dataset(
     raw_transformations = transforms.Compose(
         [
             transforms.Resize(
-                args.resolution, interpolation=transforms.InterpolationMode.BILINEAR
+                (h, w), interpolation=transforms.InterpolationMode.BILINEAR
             ),
             transforms.PILToTensor(),
         ]

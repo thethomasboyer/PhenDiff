@@ -152,11 +152,19 @@ def main(args: Namespace):
     # ------------------------------------ Dataset -----------------------------------
     dataset, raw_dataset, nb_classes = setup_dataset(args, logger)
 
+    num_workers = (
+        args.dataloader_num_workers
+        if args.dataloader_num_workers is not None
+        else accelerator.num_processes
+    )
     train_dataloader = torch.utils.data.DataLoader(  # type: ignore
         dataset,
         batch_size=args.train_batch_size,
         shuffle=True,
-        num_workers=args.dataloader_num_workers,
+        num_workers=num_workers,
+        prefetch_factor=args.dataloader_prefetch_factor,
+        persistent_workers=args.persistent_workers,
+        pin_memory=args.pin_memory
     )
 
     # ------------------------------------ Debug -------------------------------------

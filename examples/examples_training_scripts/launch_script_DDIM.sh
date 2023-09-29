@@ -48,7 +48,7 @@ $1
 --num_inference_steps 50
 --train_data_dir path/to/train/data
 --perc_samples 10
---resolution 128
+--definition 128
 --train_batch_size 112
 --eval_batch_size 256
 --max_num_steps 50000

@@ -195,7 +195,7 @@ def load_datasets(cfg: DictConfig, dataset_name: str) -> Tuple[Dataset, Dataset]
     preproc = transforms.Compose(
         [
             transforms.Resize(
-                cfg.dataset[dataset_name].resolution,
+                cfg.dataset[dataset_name].definition,
                 interpolation=transforms.InterpolationMode.BILINEAR,
             ),
             transforms.ToTensor(),

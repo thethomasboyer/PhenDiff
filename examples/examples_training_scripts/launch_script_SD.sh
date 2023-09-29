@@ -47,7 +47,7 @@ $1
 --noise_scheduler_config_path ${model_configs_folder}/noise_scheduler/better_SD_config_test.json
 --num_inference_steps 25
 --train_data_dir path/to/train/data
---resolution 128
+--definition 128
 --train_batch_size 64
 --eval_batch_size 128
 --max_num_steps 50000

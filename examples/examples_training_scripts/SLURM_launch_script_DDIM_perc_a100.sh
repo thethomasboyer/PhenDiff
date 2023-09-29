@@ -109,7 +109,7 @@ for perc in ${percentages[@]}; do
     --train_data_dir path/to/train/data
     --perc_samples ${perc}
     --seed 1234
-    --resolution 128
+    --definition 128
     --train_batch_size 96
     --eval_batch_size 256
     --max_num_steps 30000
