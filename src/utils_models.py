@@ -146,6 +146,10 @@ def _load_custom_DDIM(
         initial_pipeline_save_path, local_files_only=True, scheduler=noise_scheduler
     )
 
+    # quick temp hack
+    if not hasattr(pipeline.unet, "time_embed_dim"):
+        pipeline.unet.time_embed_dim = pipeline.unet.block_out_channels[0] * 4
+
     return pipeline
 
 
