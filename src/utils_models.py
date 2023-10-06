@@ -109,6 +109,9 @@ def _load_custom_SD(
         **denoiser_model_kwarg,
     )
 
+    # override sample definition
+    pipeline.unet.config["sample_size"] = args.definition
+
     # 4. Log the final denoiser config
     if accelerator.is_main_process:
         wandb_tracker = accelerator.get_tracker("wandb", unwrap=True)
@@ -132,10 +135,6 @@ def _load_custom_DDIM(
         local_files_only=True,
     )
 
-    # 2. Customize the pipeline components
-    # denoiser
-    # TODO(?)
-
     # noise scheduler
     noise_scheduler = _load_and_override_noise_scheduler(
         args, initial_pipeline_save_path, accelerator
@@ -146,7 +145,10 @@ def _load_custom_DDIM(
         initial_pipeline_save_path, local_files_only=True, scheduler=noise_scheduler
     )
 
-    # quick temp hack
+    # 2. Customize the pipeline components
+    # override sample definition
+    pipeline.unet.config["sample_size"] = args.definition
+    # create attribute
     if not hasattr(pipeline.unet, "time_embed_dim"):
         pipeline.unet.time_embed_dim = pipeline.unet.block_out_channels[0] * 4
 
@@ -160,6 +162,10 @@ def _load_custom_DDIM_from_scratch(
     denoiser_model_config = CustomCondUNet2DModel.load_config(
         args.denoiser_config_path,
     )
+
+    # override sample definition
+    denoiser_model_config["sample_size"] = args.definition
+
     # Log the final denoiser config
     if accelerator.is_main_process:
         wandb_tracker = accelerator.get_tracker("wandb", unwrap=True)
