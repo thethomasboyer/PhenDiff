@@ -29,7 +29,7 @@ Training or fine-tuning diffusion models is in principle performed by running th
 accelerate launch {accelerate args} train.py {script args}
 ```
 where:
-- `accelerate` must be configured to your training setup, either with `accelerate config` beforehand or by passing the appropriate flags to `accelerate launch` in place of `{accelerate args}` (ee the [accelerate documentation](https://huggingface.co/docs/accelerate) for more details)
+- `accelerate` must be configured to your training setup, either with `accelerate config` beforehand or by passing the appropriate flags to `accelerate launch` in place of `{accelerate args}` (see the [accelerate documentation](https://huggingface.co/docs/accelerate) for more details)
 - some args are **required** by the training script _in lieu_ of `{script args}` (see the `src/args_parser.py` file for the full list of possible and required training script arguments –you can also call `python train.py --help` in the terminal but it takes quite some time to print)
 
 ## 🐥 Example training commands
