@@ -54,7 +54,7 @@ class ClassTransferExperimentParams:
         class_transfer_method: str,
         pipes: dict,
         train_dataset: Dataset,
-        test_dataset: Dataset,
+        test_dataset: Optional[Dataset],
         cfg: DictConfig,
         output_dir: str,
         logger: MultiProcessAdapter,
@@ -188,7 +188,9 @@ def hack_class_embedding(cl_embed: Tensor) -> Tensor:
 
 
 @torch.no_grad()
-def load_datasets(cfg: DictConfig, dataset_name: str) -> Tuple[Dataset, Dataset]:
+def load_datasets(
+    cfg: DictConfig, dataset_name: str
+) -> Tuple[Dataset, Optional[Dataset]]:
     """TODO: docstring"""
     # data preprocessing
     normalize = cfg.dataset[dataset_name].normalize
@@ -222,18 +224,22 @@ def load_datasets(cfg: DictConfig, dataset_name: str) -> Tuple[Dataset, Dataset]
         data_dir=cfg.dataset[dataset_name].root,
         split="train",
     )
-    test_dataset: Dataset = load_dataset(  # type: ignore
-        "imagefolder",
-        data_dir=cfg.dataset[dataset_name].root,
-        split="test",
-    )
+    if Path(cfg.dataset[dataset_name].root, "test").exists():
+        test_dataset = load_dataset(  # type: ignore
+            "imagefolder",
+            data_dir=cfg.dataset[dataset_name].root,
+            split="test",
+        )
+        test_dataset.set_transform(transform_images)  # type: ignore
+        test_dataset.classes = test_dataset.features["label"].names  # type: ignore
+    else:
+        test_dataset = None
+
     train_dataset.set_transform(transform_images)  # type: ignore
-    test_dataset.set_transform(transform_images)  # type: ignore
     # mimic PyTorch ImageFolder
     train_dataset.classes = train_dataset.features["label"].names  # type: ignore
-    test_dataset.classes = test_dataset.features["label"].names  # type: ignore
 
-    return train_dataset, test_dataset
+    return train_dataset, test_dataset  # type: ignore
 
 
 def Lp_loss(
@@ -293,10 +299,14 @@ def perform_class_transfer_experiment(args: ClassTransferExperimentParams):
         for split, dataset in zip(
             ["train", "test"], [args.train_dataset, args.test_dataset]
         ):
+            # There might no be a test dataset
+            if dataset is None:
+                continue
+
             # Create dataloader
             dataloader = torch.utils.data.DataLoader(  # type: ignore
                 dataset,
-                batch_size=args.cfg.batch_sizes[pipename][
+                batch_size=args.cfg.batch_size[pipename][
                     f"{args.class_transfer_method}"
                 ],
                 shuffle=True,
@@ -353,6 +363,15 @@ def perform_class_transfer_experiment(args: ClassTransferExperimentParams):
                             clean_images,
                             orig_class_labels,
                             target_class_labels,
+                            num_inference_steps,
+                        )
+                    case "inverted_regeneration":
+                        # inverted regen is just DDIB with the original class as target!
+                        images_to_save = _ddib(
+                            pipe,
+                            clean_images,
+                            orig_class_labels,
+                            orig_class_labels,
                             num_inference_steps,
                         )
                     case _:
@@ -439,10 +458,14 @@ def compute_metrics(
         for split, dataset in zip(
             ["train", "test"], [args.cfg.dataset[args.dataset_name].root] * 2
         ):
-            # 0. Misc.
-            bs = args.cfg.batch_sizes[pipename][args.class_transfer_method]
+            # -1 Check if split exists
+            if not Path(dataset, split).exists():
+                continue
 
-            nb_samples = len(dataset)
+            # 0. Misc.
+            bs = args.cfg.batch_size[pipename][args.class_transfer_method]
+
+            nb_samples = len(list(Path(dataset, split).iterdir()))
             if nb_samples < args.cfg.kid_subset_size:
                 compute_kid = False
             elif args.cfg.compute_kid:
@@ -485,7 +508,8 @@ def compute_metrics(
             # get the classes
             classes = args.train_dataset.classes  # type: ignore
             assert (
-                classes == args.test_dataset.classes  # type: ignore
+                args.test_dataset is None
+                or classes == args.test_dataset.classes  # type: ignore
             ), "Expecting the same classes between train and test datasets"
             # compute metrics per-class
             for class_name in classes:
