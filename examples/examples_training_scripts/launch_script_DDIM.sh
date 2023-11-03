@@ -3,7 +3,7 @@
 # TODO: adapt to multi-node setting:
 #   - requires a dynamic ACCELERATE_CONFIG, notably machine_rank
 
-echo -e "\n<--------------------------------------- launch_script_SD_a100.sh --------------------------------------->\n"
+echo -e "\n<--------------------------------------- launch_script_DDIM.sh --------------------------------------->\n"
 
 # ------------------------------------------> Variables <------------------------------------------
 exp_name=experiment_name # experiment and output folder name; common to all runs in the same experiment
