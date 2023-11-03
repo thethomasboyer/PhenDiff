@@ -8,7 +8,7 @@ defaults:
 - pipeline:
   - DDIM
   - SD
-- batch_sizes: v100-32gb
+- batch_size: v100-32gb
 - _self_
 
 ####################################### EXPERIMENT VARIABLES ######################################
