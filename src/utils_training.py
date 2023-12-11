@@ -517,7 +517,7 @@ def _DDIM_prediction_wrapper(
         class_emb = None
 
     # Predict the noise residual
-    sig = signature(denoiser_model.forward)
+    sig = signature(accelerator.unwrap_model(denoiser_model).forward)
     if "class_emb" in sig.parameters:
         model_output = denoiser_model(
             sample=noisy_images,
