@@ -18,7 +18,8 @@ from typing import List, Literal, Optional, Tuple, Union
 import torch
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline, ImagePipelineOutput
 from diffusers.schedulers import DDIMScheduler
-from diffusers.utils import is_accelerate_available, randn_tensor
+from diffusers.utils import is_accelerate_available
+from diffusers.utils.torch_utils import randn_tensor
 
 DEFAULT_NUM_INFERENCE_STEPS = 50
 
@@ -281,7 +282,7 @@ class ConditionalDDIMPipeline(DiffusionPipeline):
                 and w > 0
             )
         )
-        
+
         for t in self.progress_bar(timesteps):
             # TODO: do the cond & uncond passes at once like for SD!
             # 1. predict noise model_output
