@@ -367,11 +367,12 @@ def perform_class_transfer_experiment(args: ClassTransferExperimentParams):
                         )
                     case "inverted_regeneration":
                         # inverted regen is just DDIB with the original class as target!
+                        target_class_labels = orig_class_labels
                         images_to_save = _ddib(
                             pipe,
                             clean_images,
                             orig_class_labels,
-                            orig_class_labels,
+                            target_class_labels,
                             num_inference_steps,
                         )
                     case _:
