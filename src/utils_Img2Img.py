@@ -314,7 +314,8 @@ def perform_class_transfer_experiment(args: ClassTransferExperimentParams):
 
             # Distributed inference & device placement
             dataloader = args.accelerator.prepare(dataloader)
-            pipe = pipe.to(args.accelerator.device)
+            pipe.unet = args.accelerator.prepare_model(pipe.unet, evaluation_mode=True)
+            # pipe = pipe.to(args.accelerator.device)
 
             # Create save dirs
             save_dir = (
@@ -330,7 +331,11 @@ def perform_class_transfer_experiment(args: ClassTransferExperimentParams):
 
             # Iterate over batches
             for step, batch in enumerate(
-                tqdm(dataloader, desc=f"Running {pipename} on {split} dataset")
+                tqdm(
+                    dataloader,
+                    desc=f"Running {pipename} on {split} dataset",
+                    position=0,
+                )
             ):
                 # Get batch
                 clean_images = batch["images"].to(args.accelerator.device)
@@ -364,6 +369,7 @@ def perform_class_transfer_experiment(args: ClassTransferExperimentParams):
                             orig_class_labels,
                             target_class_labels,
                             num_inference_steps,
+                            process_idx=args.accelerator.process_index,
                         )
                     case "inverted_regeneration":
                         # inverted regen is just DDIB with the original class as target!
@@ -374,6 +380,7 @@ def perform_class_transfer_experiment(args: ClassTransferExperimentParams):
                             orig_class_labels,
                             target_class_labels,
                             num_inference_steps,
+                            process_idx=args.accelerator.process_index,
                         )
                     case _:
                         raise ValueError(
@@ -563,6 +570,7 @@ def _ddib(
     orig_class_labels: Tensor,
     target_class_labels: Tensor,
     num_inference_steps: int,
+    process_idx: int,
 ):
     """TODO: docstring"""
     # Preprocess inputs if LDM
@@ -576,10 +584,7 @@ def _ddib(
 
     # Perform inversion
     inverted_gauss = _inversion(
-        pipe,
-        clean_images,
-        orig_class_cond,
-        num_inference_steps,
+        pipe, clean_images, orig_class_cond, num_inference_steps, process_idx
     )
 
     # Perform generation
@@ -665,10 +670,7 @@ def _linear_interp_custom_guidance_inverted_start(
 
     # Perform inversion
     inverted_gauss = _inversion(
-        pipe,
-        clean_images,
-        orig_class_labels,
-        num_inference_steps,
+        pipe, clean_images, orig_class_labels, num_inference_steps, None
     )
 
     # Perform guided generation
@@ -764,6 +766,7 @@ def _inversion(
     input_images: Tensor,
     class_labels: Tensor,
     num_inference_steps: int,
+    proc_idx: int | None,
 ) -> Tensor:
     """TODO: docstring"""
     # duplicate the input images
@@ -776,7 +779,16 @@ def _inversion(
     DDIM_inv_scheduler.set_timesteps(num_inference_steps)
 
     # invert the diffeq
-    for t in DDIM_inv_scheduler.timesteps:
+    for t in tqdm(
+        DDIM_inv_scheduler.timesteps,
+        position=proc_idx + 1 if proc_idx is not None else 0,
+        desc=(
+            "Inverting images" + f" on process {proc_idx}"
+            if proc_idx is not None
+            else ""
+        ),
+        leave=False,
+    ):
         model_output = pipe.unet(gauss, t, class_labels).sample
 
         gauss = DDIM_inv_scheduler.step(

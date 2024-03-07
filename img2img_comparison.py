@@ -43,6 +43,8 @@ from src.utils_misc import setup_logger
 
 logger = get_logger(__name__, log_level="INFO")
 
+torch.backends.cuda.matmul.allow_tf32 = True
+
 
 @hydra.main(
     version_base=None,
@@ -96,6 +98,13 @@ def main(cfg: DictConfig) -> None:
     # --------------------------------- Load pretrained pipelines ---------------------------------
     logger.info(f"\033[1m==========================> Loading pipelines\033[0m")
     pipes = call(cfg.pipeline)
+    # manage progress bars
+    for pipename in pipes:
+        pipes[pipename].set_progress_bar_config(
+            position=accelerator.process_index + 1,
+            leave=False,
+            desc=f"Generating images on process {accelerator.process_index}",
+        )
 
     # ---------------------------------------- Load dataset ---------------------------------------
     # assume only one dataset
