@@ -106,6 +106,8 @@ def main(cfg: DictConfig) -> None:
         f"\033[1m==========================> Loading dataset {dataset_name}\033[0m"
     )
     train_dataset, test_dataset = load_datasets(cfg, dataset_name)
+    logger.info(f"Train dataset: {train_dataset}")
+    logger.info(f"Test dataset: {test_dataset}")
 
     # ---------------------------------------- Experiments ----------------------------------------
     # Params common to all experiments
