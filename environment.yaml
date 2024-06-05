@@ -436,5 +436,5 @@ dependencies:
 - zipp=3.17.0=pyhd8ed1ab_0
 - zlib=1.2.13=hd590300_5
 - zstd=1.5.5=hfc55251_0
-- pip:
-    - "--editable=git+https://github.com/toshas/torch-fidelity.git@154062cf937d54ed82bf01b59490dd3c21aa76c4#egg=torch-fidelity"
+  - pip:
+      - "--editable=git+https://github.com/toshas/torch-fidelity.git@154062cf937d54ed82bf01b59490dd3c21aa76c4#egg=torch-fidelity"
