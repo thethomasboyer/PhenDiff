@@ -1,4 +1,4 @@
-# PhenDiff: Revealing Invisible Phenotypes with Conditional Diffusion Models
+# [PhenDiff: Revealing Subtle Phenotypes with Diffusion Models in Real Images](https://arxiv.org/abs/2312.08290)
 
 ---
 
@@ -7,9 +7,6 @@ This repository contains the code needed both
 1. to train (or fine-tune) diffusion models 
 2. to perform image-to-image class translation with pretrained models
 
-
-> [!WARNING]
-> This repo is still a WIP; expect breaking changes and broken things!
 
 # ⬇️ Install
 
