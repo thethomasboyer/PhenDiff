@@ -13,8 +13,15 @@ This repository contains the code needed both
 ## ⚙️ Dependencies
 
 To install the required dependencies, run:
+
 ```sh
-{conda, mamba} install -f environment.yaml
+mamba install -f environment.yaml
+```
+
+or:
+
+```sh
+conda env create -f environment.yml
 ```
 
 ## 📊 Experiment tracker
