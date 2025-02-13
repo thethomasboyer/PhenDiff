@@ -1,5 +1,6 @@
-# [PhenDiff: Revealing Subtle Phenotypes with Diffusion Models in Real Images](https://arxiv.org/abs/2312.08290)
+# PhenDiff: Revealing Subtle Phenotypes with Diffusion Models in Real Images ([🔗 link](https://arxiv.org/abs/2312.08290))
 
+@ MICCAI 2024 ([🔗 link](https://doi.org/10.1007/978-3-031-72384-1_34))
 ---
 
 # Introduction
